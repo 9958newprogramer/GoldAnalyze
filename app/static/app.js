@@ -44,6 +44,7 @@ async function loadRuntime() {
         ? `LLM primary · ${health.router_model}`
         : "rule fallback · LLM unconfigured",
     );
+    setText("#planner-name", health.planner || "unavailable");
     setText("#interpreter-mode", health.llm_configured ? "LLM + validated fallback" : "deterministic fallback");
     setText("#data-source", health.data_source);
     setText("#search-provider", health.search_provider);
@@ -209,6 +210,40 @@ function renderTrace(events) {
   });
 }
 
+function renderPlan(plan) {
+  const list = document.querySelector("#execution-plan");
+  list.replaceChildren();
+  if (!plan) {
+    setText("#plan-meta", "请求在生成执行计划前结束");
+    return;
+  }
+  setText(
+    "#plan-meta",
+    `${plan.planner} · ${plan.skill}@${plan.skill_version} · plan ${plan.plan_id} · tools ${plan.planned_tool_calls}/${plan.max_tool_calls}`,
+  );
+  const completed = new Set(plan.completed_steps || []);
+  const skipped = new Set(plan.skipped_steps || []);
+  plan.steps.forEach((step) => {
+    const item = document.createElement("li");
+    const state = document.createElement("span");
+    const status = completed.has(step.step_id)
+      ? "completed"
+      : step.step_id === plan.failed_step
+        ? "failed"
+        : skipped.has(step.step_id)
+          ? "skipped"
+          : "planned";
+    state.className = `plan-state ${status}`;
+    state.textContent = status.toUpperCase();
+    const name = document.createElement("strong");
+    name.textContent = step.step_id;
+    const binding = document.createElement("span");
+    binding.textContent = step.tool_name ? `Tool · ${step.tool_name}` : "Control step";
+    item.append(state, name, binding);
+    list.append(item);
+  });
+}
+
 function renderWarnings(warnings) {
   const box = document.querySelector("#warning-box");
   if (!warnings || warnings.length === 0) {
@@ -257,6 +292,7 @@ function renderResult(run) {
   setText("#strategy-spec", JSON.stringify(artifact, null, 2));
   renderWarnings(run.warnings);
   renderCache(run.cache, run.cache_status);
+  renderPlan(run.plan);
   renderTrace(run.events || []);
   if (run.metrics) renderMetrics(run.metrics, backtestMetricDefinitions);
   else if (run.market_result) renderMetrics(run.market_result, marketMetricDefinitions);
@@ -277,6 +313,7 @@ form.addEventListener("submit", async (event) => {
   event.preventDefault();
   const statusMessages = [
     "正在执行安全预检与 LLM 意图路由…",
+    "正在生成并校验 Bounded Plan…",
     "正在加载版本化 Skill 与 Tool Policy…",
     "正在通过 Tool Gateway 执行任务…",
     "正在生成结构化反馈与审计轨迹…",

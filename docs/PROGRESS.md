@@ -17,8 +17,8 @@
 
 | 版本 | 目标 | 状态 | 完成门槛 |
 |---|---|---|---|
-| v0.4-baseline | 固化现有 Router、4 Skills、治理、MCP Server、Memory、Eval | 已验证，待 checkpoint | `make verify`；Golden Set 16/16 |
-| v0.5-planner | 类型化 Bounded Planner 与计划轨迹 | 进行中 | 四类意图计划正确；越权/乱序/超预算计划被拒；API/MCP 返回 Plan |
+| v0.4-baseline | 固化现有 Router、4 Skills、治理、MCP Server、Memory、Eval | 已验证，checkpoint `c972115` | `make verify`；Golden Set 16/16 |
+| v0.5-planner | 类型化 Bounded Planner 与计划轨迹 | 已验证 | 四类意图计划正确；越权/乱序/超预算计划被拒；API/MCP 返回 Plan |
 | v0.6-mcp-client | MCP Client 与动态 Tool 目录 | 未开始 | 动态发现、Schema 指纹、命名空间、超时、健康状态均有集成测试 |
 | v0.7-approval | 风险分级与人工审批状态机 | 未开始 | allow/deny/review 完整闭环；审批不可伪造、过期或重复使用 |
 | v0.8-async | Redis Streams Worker 与 SSE 长任务 | 未开始 | 幂等、取消、超时、有限重试、Checkpoint 恢复和断线重连测试 |
@@ -31,12 +31,12 @@
 
 | 简历主张 | 当前证据 | 缺口 |
 |---|---|---|
-| LLM Router + 版本化 Skill | 4 类类型化意图、4 个 Skill、LLM 失败规则降级 | 尚无 Bounded Planner |
+| LLM Router + Bounded Planner + 版本化 Skill | 4 类类型化意图、4 个 Skill、LLM 失败规则降级；类型化计划、独立校验与运行时逐步授权 | 当前为确定性线性计划；尚无分支、并行和重规划 |
 | MCP Server/Client + 动态发现 | 3 Tools、固定 Resources/Template 的 MCP Server 测试 | 尚无 MCP Client、动态发现与 Schema 兼容检查 |
 | Tool Governance + 人工审批 | Per-Skill Allowlist、预算、预检拒绝、Audit | 尚无 `review` 状态与审批凭证 |
 | Redis Worker + SSE + 恢复 | 无 | 整项待实现 |
 | OpenTelemetry | 无 | 整项待实现 |
-| Artifact Memory + Agent Eval | 两级复用、TTL/版本失效、16 条 v3 Golden Set | 需扩充至 100+、接入 CI 并补对抗覆盖 |
+| Artifact Memory + Agent Eval | 两级复用、TTL/版本失效、16 条 v4 Golden Set，Eval 校验 Plan 与实际轨迹一致性 | 需扩充至 100+、接入 CI 并补对抗覆盖 |
 
 ## 已验证版本记录
 
@@ -64,24 +64,60 @@
 - 相似任务不能自动复用，只有任务规格和数据版本完全一致才 exact hit。
 - 暂未引入 Planner、MCP Client、异步 Worker、人工审批和 OpenTelemetry，因此不能在当前简历中宣称这些能力已经完成。
 
+### v0.5-planner — 2026-09-08
+
+**完成内容**
+
+- 新增类型化 `ExecutionPlan` / `PlanStep`，记录步骤类型、Tool 绑定、依赖、预算、Planner 来源以及 completed/skipped/failed 状态。
+- `BoundedPlanner` 只从服务端版本化 Skill Manifest 编译计划，生成稳定 Plan ID；不执行模型生成的代码、SQL 或任意 Tool 名称。
+- 独立 `PlanValidator` 在执行前校验 Skill 版本、步骤全集和顺序、依赖、Tool Allowlist、调用次数及预算。
+- `PlanRuntime` 在实际动作发生前再次授权，执行后更新步骤状态；Executor 偏离顺序、依赖或 Tool 绑定时 fail closed。
+- Orchestrator、HTTP API、MCP、Web UI 与 Eval 共用同一个 Plan 数据契约；页面可检查计划、Trace 和 Tool Audit。
+- Golden Set 升级为 v4，工作流质量维度会校验 Plan 有效性、Skill 一致性、预算和实际事件轨迹。
+
+**关键优化与取舍**
+
+- 当前 Planner 是服务端确定性编译器，LLM 负责语义路由但不能扩张 Tool 权限；这样更容易证明可控性，也避免把金融策略生成误写成项目核心。
+- Validator 与 Runtime 分层：前者拒绝静态非法计划，后者防止执行期代码与已验证计划发生漂移。
+- 编译、缓存检查和 Tool 调用均在动作发生前完成运行时授权，避免出现“先执行、后审计”的伪治理。
+- exact cache hit 只把真实执行的编译与缓存步骤记为 completed，其余领域步骤记为 skipped，保持观测轨迹可信。
+- 暂不引入分支、并行和自动重规划；先固化容易测试、容易讲清的线性最小闭环。
+
+**验证证据**
+
+- `make verify`：Ruff 通过，Pytest `52 passed`。
+- `.venv/bin/aurumlab-eval --json`：dataset v4，`16/16`，score `100.0`。
+- 浏览器端到端验证：四步行情查询 Plan 全部完成，Trace 与 Plan 一致，控制台零报错。
+- 二次相同请求命中 Artifact Memory：前两步 completed，领域查询与总结步骤 skipped。
+
+**已知限制**
+
+- Planner 目前仅支持基于 Manifest 的确定性线性计划，不支持 DAG 并行、条件分支或自动重规划。
+- MCP 当前只有 Server；Client、动态 Tool discovery、Schema 兼容性和远端健康检查留到 v0.6。
+- 尚未实现人工审批、异步 Worker、OpenTelemetry 和 100+ 对抗评测集。
+
+**下一步**
+
+- 实现 v0.6 MCP Client 与动态 Tool Catalog，并确保远端 Tool 仍经过同一治理网关。
+
 ## 当前工作区
 
 - 目标分支：`codex/resume-ready-agent-runtime`
-- 当前版本：`0.4.0`
-- 当前阶段：准备实现 `v0.5-planner`
+- 当前版本：`0.5.0`
+- 当前阶段：准备实现 `v0.6-mcp-client`
 - 入口：`app/agent/orchestrator.py`
 - 数据契约：`app/models.py`
 - Skill Manifest：`skills/*/skill.json`
 - 验证命令：`make verify && .venv/bin/aurumlab-eval --json`
 
-## 下一步：v0.5-planner
+## 下一步：v0.6-mcp-client
 
-1. 新增 `ExecutionPlan`、`PlanStep`、依赖和预算约束模型。
-2. 从已选 Skill 生成确定性基线 Plan；可选 LLM Planner 只能在 Skill 允许的步骤/Tool 中排序和选择。
-3. 增加独立 Plan Validator，拒绝未知 Tool、重复 Step、依赖乱序、循环和超预算。
-4. Orchestrator 在领域执行前生成并记录 Plan，`RunResponse` 返回计划与 Planner 来源。
-5. 增加单元、Agent、API、MCP 和 Eval 回归测试。
-6. 更新 README、ARCHITECTURE、RESUME 和本账本，运行完整验证后提交 checkpoint。
+1. 基于当前锁定的 MCP SDK 版本实现 Client 生命周期与传输配置，不依赖私有外部服务。
+2. 新增类型化 `ToolCatalog`，动态发现远端 Tool，并记录 Server、命名空间、Input Schema 指纹和健康状态。
+3. 校验 Schema 兼容性，拒绝 Tool 同名冲突、未声明字段、Schema 漂移和超时响应。
+4. 将远端 Tool 适配到现有 Governance Gateway，继续执行 Skill Allowlist、调用预算、威胁预检和审计。
+5. 用进程内 MCP Server 完成 discovery、调用、超时、断连与 Schema 漂移集成测试。
+6. 更新 README、ARCHITECTURE、RESUME 和本账本，运行完整验证后提交独立 checkpoint。
 
 ## 中断恢复步骤
 

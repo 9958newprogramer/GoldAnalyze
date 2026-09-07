@@ -142,6 +142,44 @@ class AgentEvent(BaseModel):
     details: dict[str, Any] = Field(default_factory=dict)
 
 
+class PlanStep(BaseModel):
+    """One bounded executor step derived from a versioned Skill manifest."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    step_id: str = Field(pattern=r"^[a-z][a-z0-9_]{1,63}$")
+    order: int = Field(ge=1, le=32)
+    kind: Literal["control", "tool"]
+    tool_name: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9_]{1,63}$")
+    depends_on: list[str] = Field(default_factory=list, max_length=8)
+
+    @model_validator(mode="after")
+    def validate_tool_binding(self) -> PlanStep:
+        if self.kind == "tool" and self.tool_name is None:
+            raise ValueError("tool step 必须绑定 tool_name")
+        if self.kind == "control" and self.tool_name is not None:
+            raise ValueError("control step 不能绑定 tool_name")
+        return self
+
+
+class ExecutionPlan(BaseModel):
+    """Validated plan plus an observable deterministic-execution outcome."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    plan_id: str = Field(pattern=r"^[a-f0-9]{12}$")
+    skill: str
+    skill_version: str
+    planner: str
+    steps: list[PlanStep] = Field(min_length=1, max_length=32)
+    max_tool_calls: int = Field(ge=1, le=50)
+    planned_tool_calls: int = Field(ge=0, le=50)
+    validated: bool = False
+    completed_steps: list[str] = Field(default_factory=list)
+    skipped_steps: list[str] = Field(default_factory=list)
+    failed_step: str | None = None
+
+
 class ThreatSignal(BaseModel):
     category: str
     confidence: float = Field(ge=0, le=1)
@@ -250,6 +288,7 @@ class RunResponse(BaseModel):
     interpreter: str
     question: str
     route: IntentDecision | None = None
+    plan: ExecutionPlan | None = None
     execution_mode: Literal["tool_chain", "cache", "direct", "rejected"] = "tool_chain"
     cache_status: Literal["miss", "exact_hit", "semantic_candidate", "refresh", "bypass"] = "bypass"
     cache: CacheInfo | None = None
@@ -273,9 +312,17 @@ class SkillDescriptor(BaseModel):
     name: str
     version: str
     description: str
-    allowed_tools: list[str]
+    allowed_tools: list[str] = Field(min_length=1, max_length=50)
     max_tool_calls: int = Field(ge=1, le=50)
-    steps: list[str]
+    steps: list[str] = Field(min_length=1, max_length=32)
+
+    @model_validator(mode="after")
+    def validate_unique_capabilities(self) -> SkillDescriptor:
+        if len(self.allowed_tools) != len(set(self.allowed_tools)):
+            raise ValueError("Skill allowed_tools 不能重复")
+        if len(self.steps) != len(set(self.steps)):
+            raise ValueError("Skill steps 不能重复")
+        return self
 
 
 class SkillListResponse(BaseModel):

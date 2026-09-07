@@ -1,3 +1,4 @@
+from app.agent.planner import PlanValidationError
 from app.agent.router import IntentRouter
 from app.bootstrap import build_services
 from app.config import Settings
@@ -28,6 +29,11 @@ class FakeBacktestClassifier:
         )
 
 
+class RejectingPlanner:
+    def build(self, skill):
+        raise PlanValidationError("tampered plan")
+
+
 async def test_agent_completes_minimum_closed_loop(tmp_path):
     services = build_services(Settings(app_database_path=str(tmp_path / "runs.db")))
     response = await services.agent.run(
@@ -42,9 +48,14 @@ async def test_agent_completes_minimum_closed_loop(tmp_path):
     assert response.data_profile.synthetic is True
     assert response.route is not None
     assert response.route.intent == "backtest_strategy"
+    assert response.plan is not None
+    assert response.plan.validated is True
+    assert response.plan.planned_tool_calls == 4
+    assert response.plan.completed_steps == [step.step_id for step in response.plan.steps]
     assert [event.stage for event in response.events] == [
         "route_intent",
         "select_skill",
+        "build_plan",
         "interpret_strategy",
         "cache_lookup",
         "inspect_market_data",
@@ -97,6 +108,23 @@ async def test_agent_rejects_dangerous_request_before_tools(tmp_path):
     assert [event.stage for event in response.events] == ["route_intent", "policy_reject"]
 
 
+async def test_agent_fails_closed_when_plan_validation_fails(tmp_path):
+    services = build_services(Settings(app_database_path=str(tmp_path / "runs.db")))
+    services.agent.planner = RejectingPlanner()
+
+    response = await services.agent.run("查询黄金最近5根日K线。")
+
+    assert response.status == "failed"
+    assert response.plan is None
+    assert response.tool_audit == []
+    assert [event.stage for event in response.events] == [
+        "route_intent",
+        "select_skill",
+        "build_plan",
+    ]
+    assert response.events[-1].status == "failed"
+
+
 async def test_agent_external_research_preserves_sources(tmp_path):
     services = build_services(Settings(app_database_path=str(tmp_path / "runs.db")))
     services.agent.search_provider = FakeSearchProvider()
@@ -132,9 +160,18 @@ async def test_equivalent_strategy_phrasing_reuses_persisted_artifact(tmp_path):
     assert reused.cache.saved_tool_calls == 4
     assert reused.metrics == source.metrics
     assert reused.tool_audit == []
+    assert reused.plan is not None
+    assert reused.plan.completed_steps == ["interpret_strategy", "cache_lookup"]
+    assert reused.plan.skipped_steps == [
+        "inspect_market_data",
+        "validate_strategy_spec",
+        "run_backtest",
+        "summarize_result",
+    ]
     assert [event.stage for event in reused.events] == [
         "route_intent",
         "select_skill",
+        "build_plan",
         "interpret_strategy",
         "cache_lookup",
     ]

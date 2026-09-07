@@ -26,6 +26,7 @@ async def test_mcp_discovers_and_calls_tools():
         )
         assert routed.is_error is False
         assert routed.structured_content["route"]["intent"] == "query_market_data"
+        assert routed.structured_content["plan"]["validated"] is True
 
         resources = await client.list_resources()
         uris = {str(resource.uri) for resource in resources.resources}

@@ -9,6 +9,7 @@ from typing import Any, Literal
 from uuid import uuid4
 
 from app.agent.interpreter import OpenAICompatibleStrategyInterpreter
+from app.agent.planner import BoundedPlanner, PlanRuntime
 from app.agent.router import IntentRouter
 from app.agent.task_compiler import compile_external_research, compile_market_query
 from app.domain.backtest import BacktestResult, run_sma_crossover
@@ -19,6 +20,7 @@ from app.models import (
     ArtifactSnapshot,
     CacheInfo,
     DataProfile,
+    ExecutionPlan,
     ExternalResearchResult,
     ExternalResearchSpec,
     MarketBarView,
@@ -55,6 +57,7 @@ class AurumAgent:
         runs: RunRepository,
         artifacts: ArtifactCache,
         router: IntentRouter | None = None,
+        planner: BoundedPlanner | None = None,
         market_cache_ttl_seconds: int = 300,
         research_cache_ttl_seconds: int = 900,
     ):
@@ -65,6 +68,7 @@ class AurumAgent:
         self.runs = runs
         self.artifacts = artifacts
         self.router = router or IntentRouter()
+        self.planner = planner or BoundedPlanner()
         self.market_cache_ttl_seconds = market_cache_ttl_seconds
         self.research_cache_ttl_seconds = research_cache_ttl_seconds
         self.tools = ToolRegistry()
@@ -187,13 +191,17 @@ class AurumAgent:
     @staticmethod
     async def _timed_event(
         events: list[AgentEvent],
+        runtime: PlanRuntime,
         stage: str,
         message: str,
         action: Callable[[], Awaitable[Any]],
+        tool_name: str | None = None,
     ) -> Any:
+        runtime.begin(stage, tool_name)
         started = perf_counter()
         try:
             output = await action()
+            runtime.complete(stage)
             events.append(
                 AgentEvent(
                     sequence=len(events) + 1,
@@ -205,6 +213,44 @@ class AurumAgent:
             )
             return output
         except Exception as exc:
+            runtime.fail(stage)
+            events.append(
+                AgentEvent(
+                    sequence=len(events) + 1,
+                    stage=stage,
+                    status="failed",
+                    message=f"{message}失败：{exc}",
+                    duration_ms=round((perf_counter() - started) * 1_000, 2),
+                    details={"error_type": type(exc).__name__},
+                )
+            )
+            raise
+
+    @staticmethod
+    def _timed_sync_event(
+        events: list[AgentEvent],
+        runtime: PlanRuntime,
+        stage: str,
+        message: str,
+        action: Callable[[], Any],
+    ) -> Any:
+        runtime.begin(stage)
+        started = perf_counter()
+        try:
+            output = action()
+            runtime.complete(stage)
+            events.append(
+                AgentEvent(
+                    sequence=len(events) + 1,
+                    stage=stage,
+                    status="completed",
+                    message=message,
+                    duration_ms=round((perf_counter() - started) * 1_000, 2),
+                )
+            )
+            return output
+        except Exception as exc:
+            runtime.fail(stage)
             events.append(
                 AgentEvent(
                     sequence=len(events) + 1,
@@ -220,58 +266,65 @@ class AurumAgent:
     def _lookup_cache(
         self,
         events: list[AgentEvent],
+        runtime: PlanRuntime,
         task: TaskFingerprint,
         cache_policy: Literal["use", "refresh", "bypass"],
     ) -> CacheLookup:
+        runtime.begin("cache_lookup")
         started = perf_counter()
-        if cache_policy == "bypass":
-            lookup = CacheLookup(
-                CacheInfo(
-                    status="bypass",
-                    fingerprint=task.public_fingerprint,
-                    data_version=task.data_version,
-                    reason="caller_bypassed_cache",
-                )
-            )
-        elif cache_policy == "refresh":
-            lookup = CacheLookup(
-                CacheInfo(
-                    status="refresh",
-                    fingerprint=task.public_fingerprint,
-                    data_version=task.data_version,
-                    reason="caller_forced_refresh",
-                )
-            )
-        else:
-            try:
-                lookup = self.artifacts.lookup(task)
-            except Exception as exc:  # noqa: BLE001 -- cache failure must not break primary execution
+        try:
+            if cache_policy == "bypass":
                 lookup = CacheLookup(
                     CacheInfo(
-                        status="miss",
+                        status="bypass",
                         fingerprint=task.public_fingerprint,
                         data_version=task.data_version,
-                        reason=f"cache_lookup_failed:{type(exc).__name__}",
+                        reason="caller_bypassed_cache",
                     )
                 )
-        messages = {
-            "exact_hit": "命中长期 Artifact Cache，跳过领域 Tool 链",
-            "semantic_candidate": "发现相似任务，但规格不同，将重新执行以保证结果正确",
-            "miss": "未找到可复用 Artifact，将执行完整 Tool 链",
-            "refresh": "调用方要求刷新，将执行完整 Tool 链并更新 Artifact",
-            "bypass": "本次请求绕过 Artifact Cache",
-        }
-        events.append(
-            AgentEvent(
-                sequence=len(events) + 1,
-                stage="cache_lookup",
-                status="completed",
-                message=messages[lookup.info.status],
-                duration_ms=round((perf_counter() - started) * 1_000, 2),
-                details=lookup.info.model_dump(mode="json", exclude_none=True),
+            elif cache_policy == "refresh":
+                lookup = CacheLookup(
+                    CacheInfo(
+                        status="refresh",
+                        fingerprint=task.public_fingerprint,
+                        data_version=task.data_version,
+                        reason="caller_forced_refresh",
+                    )
+                )
+            else:
+                try:
+                    lookup = self.artifacts.lookup(task)
+                except Exception as exc:  # noqa: BLE001 -- cache cannot break primary execution
+                    lookup = CacheLookup(
+                        CacheInfo(
+                            status="miss",
+                            fingerprint=task.public_fingerprint,
+                            data_version=task.data_version,
+                            reason=f"cache_lookup_failed:{type(exc).__name__}",
+                        )
+                    )
+            messages = {
+                "exact_hit": "命中长期 Artifact Cache，跳过领域 Tool 链",
+                "semantic_candidate": "发现相似任务，但规格不同，将重新执行以保证结果正确",
+                "miss": "未找到可复用 Artifact，将执行完整 Tool 链",
+                "refresh": "调用方要求刷新，将执行完整 Tool 链并更新 Artifact",
+                "bypass": "本次请求绕过 Artifact Cache",
+            }
+            events.append(
+                AgentEvent(
+                    sequence=len(events) + 1,
+                    stage="cache_lookup",
+                    status="completed",
+                    message=messages[lookup.info.status],
+                    duration_ms=round((perf_counter() - started) * 1_000, 2),
+                    details=lookup.info.model_dump(mode="json", exclude_none=True),
+                )
             )
-        )
-        return lookup
+            runtime.complete("cache_lookup")
+            return lookup
+        except Exception:
+            runtime.fail("cache_lookup")
+            raise
 
     @staticmethod
     def _cached_payload(source: ArtifactSnapshot, cache: CacheInfo) -> dict[str, Any]:
@@ -299,11 +352,13 @@ class AurumAgent:
         self,
         question: str,
         events: list[AgentEvent],
+        runtime: PlanRuntime,
         gateway: ToolGateway,
         cache_policy: Literal["use", "refresh", "bypass"],
     ) -> dict[str, Any]:
         interpretation = await self._timed_event(
             events,
+            runtime,
             "interpret_strategy",
             "已将用户问题编译为受约束的 StrategySpec",
             lambda: self.interpreter.interpret(question),
@@ -313,11 +368,12 @@ class AurumAgent:
             interpretation.spec,
             self.market_repository.data_version(interpretation.spec),
         )
-        lookup = self._lookup_cache(events, task, cache_policy)
+        lookup = self._lookup_cache(events, runtime, task, cache_policy)
         if lookup.info.status == "exact_hit" and lookup.source is not None:
             return self._cached_payload(lookup.source, lookup.info)
         inspected = await self._timed_event(
             events,
+            runtime,
             "inspect_market_data",
             "已通过受治理 Tool 读取并检查行情数据",
             lambda: gateway.call(
@@ -325,11 +381,13 @@ class AurumAgent:
                 memory_key=f"{task.fingerprint}:inspect_market_data",
                 spec=interpretation.spec,
             ),
+            tool_name="inspect_market_data",
         )
         bars: list[Bar] = inspected["bars"]
         profile: DataProfile = inspected["profile"]
         validation_warnings = await self._timed_event(
             events,
+            runtime,
             "validate_strategy_spec",
             "已验证参数边界、数据充分性和下一根 K 线成交约束",
             lambda: gateway.call(
@@ -338,9 +396,11 @@ class AurumAgent:
                 bars=bars,
                 profile=profile,
             ),
+            tool_name="validate_strategy_spec",
         )
         result: BacktestResult = await self._timed_event(
             events,
+            runtime,
             "run_backtest",
             "确定性回测工具执行完成",
             lambda: gateway.call(
@@ -349,12 +409,15 @@ class AurumAgent:
                 spec=interpretation.spec,
                 bars=bars,
             ),
+            tool_name="run_backtest",
         )
         summary = await self._timed_event(
             events,
+            runtime,
             "summarize_result",
             "已根据结构化实验产物生成反馈",
             lambda: gateway.call("summarize_result", result=result, profile=profile),
+            tool_name="summarize_result",
         )
         return {
             "interpreter": interpretation.interpreter,
@@ -375,18 +438,16 @@ class AurumAgent:
         self,
         question: str,
         events: list[AgentEvent],
+        runtime: PlanRuntime,
         gateway: ToolGateway,
         cache_policy: Literal["use", "refresh", "bypass"],
     ) -> dict[str, Any]:
-        query = compile_market_query(question)
-        events.append(
-            AgentEvent(
-                sequence=len(events) + 1,
-                stage="compile_market_query",
-                status="completed",
-                message="已将问题编译为受约束的 MarketQuerySpec",
-                duration_ms=0,
-            )
+        query = self._timed_sync_event(
+            events,
+            runtime,
+            "compile_market_query",
+            "已将问题编译为受约束的 MarketQuerySpec",
+            lambda: compile_market_query(question),
         )
         repository_spec = StrategySpec(
             symbol=query.symbol,
@@ -399,11 +460,12 @@ class AurumAgent:
             query,
             self.market_repository.data_version(repository_spec),
         )
-        lookup = self._lookup_cache(events, task, cache_policy)
+        lookup = self._lookup_cache(events, runtime, task, cache_policy)
         if lookup.info.status == "exact_hit" and lookup.source is not None:
             return self._cached_payload(lookup.source, lookup.info)
         queried = await self._timed_event(
             events,
+            runtime,
             "query_market_data",
             "已通过只读行情 Tool 获取结构化数据快照",
             lambda: gateway.call(
@@ -411,9 +473,11 @@ class AurumAgent:
                 memory_key=f"{task.fingerprint}:query_market_data",
                 query=query,
             ),
+            tool_name="query_market_data",
         )
         summary = await self._timed_event(
             events,
+            runtime,
             "summarize_market_query",
             "已根据行情快照生成可核验摘要",
             lambda: gateway.call(
@@ -422,6 +486,7 @@ class AurumAgent:
                 result=queried["result"],
                 profile=queried["profile"],
             ),
+            tool_name="summarize_market_query",
         )
         return {
             "interpreter": "deterministic-market-compiler",
@@ -440,35 +505,36 @@ class AurumAgent:
         self,
         question: str,
         events: list[AgentEvent],
+        runtime: PlanRuntime,
         gateway: ToolGateway,
         cache_policy: Literal["use", "refresh", "bypass"],
     ) -> dict[str, Any]:
-        spec = compile_external_research(question)
-        events.append(
-            AgentEvent(
-                sequence=len(events) + 1,
-                stage="compile_research_query",
-                status="completed",
-                message="已生成有界的 ExternalResearchSpec",
-                duration_ms=0,
-            )
+        spec = self._timed_sync_event(
+            events,
+            runtime,
+            "compile_research_query",
+            "已生成有界的 ExternalResearchSpec",
+            lambda: compile_external_research(question),
         )
         task = build_task_fingerprint(
             "external_research",
             spec,
             f"provider-v1:{self.search_provider.name}",
         )
-        lookup = self._lookup_cache(events, task, cache_policy)
+        lookup = self._lookup_cache(events, runtime, task, cache_policy)
         if lookup.info.status == "exact_hit" and lookup.source is not None:
             return self._cached_payload(lookup.source, lookup.info)
         searched = await self._timed_event(
             events,
+            runtime,
             "search_external_knowledge",
             "已调用受治理的外部 Search Provider",
             lambda: gateway.call("search_external_knowledge", spec=spec),
+            tool_name="search_external_knowledge",
         )
         result = await self._timed_event(
             events,
+            runtime,
             "summarize_external_research",
             "已基于来源片段生成带出处的反馈",
             lambda: gateway.call(
@@ -476,6 +542,7 @@ class AurumAgent:
                 spec=spec,
                 sources=searched["sources"],
             ),
+            tool_name="summarize_external_research",
         )
         warnings = [searched["warning"]] if searched["warning"] else []
         if self.search_provider.name == "unconfigured":
@@ -496,14 +563,17 @@ class AurumAgent:
         self,
         question: str,
         events: list[AgentEvent],
+        runtime: PlanRuntime,
         gateway: ToolGateway,
         cache_policy: Literal["use", "refresh", "bypass"],
     ) -> dict[str, Any]:
         summary = await self._timed_event(
             events,
+            runtime,
             "compose_general_response",
             "已生成能力边界内的直接反馈",
             lambda: gateway.call("compose_general_response", question=question),
+            tool_name="compose_general_response",
         )
         return {
             "interpreter": "direct",
@@ -524,6 +594,8 @@ class AurumAgent:
         events: list[AgentEvent] = []
         cache_task: TaskFingerprint | None = None
         cache_ttl: int | None = None
+        plan: ExecutionPlan | None = None
+        runtime: PlanRuntime | None = None
         route_started = perf_counter()
         route = await self.router.route(question)
         events.append(
@@ -595,23 +667,62 @@ class AurumAgent:
             )
         )
 
-        workflows = {
-            "backtest_strategy": self._run_backtest_workflow,
-            "query_market_data": self._run_market_query_workflow,
-            "external_research": self._run_external_research_workflow,
-            "other": self._run_general_workflow,
-        }
         try:
-            payload = await workflows[route.intent](question, events, gateway, cache_policy)
+            plan_started = perf_counter()
+            try:
+                plan = self.planner.build(skill)
+                runtime = PlanRuntime(plan)
+                events.append(
+                    AgentEvent(
+                        sequence=len(events) + 1,
+                        stage="build_plan",
+                        status="completed",
+                        message=(
+                            f"已生成并校验 {len(plan.steps)} 步 Bounded Plan，"
+                            f"计划调用 {plan.planned_tool_calls}/{plan.max_tool_calls} 个 Tool"
+                        ),
+                        duration_ms=round((perf_counter() - plan_started) * 1_000, 2),
+                        details={
+                            "plan_id": plan.plan_id,
+                            "planner": plan.planner,
+                            "steps": [step.step_id for step in plan.steps],
+                            "planned_tool_calls": plan.planned_tool_calls,
+                        },
+                    )
+                )
+            except Exception as exc:
+                events.append(
+                    AgentEvent(
+                        sequence=len(events) + 1,
+                        stage="build_plan",
+                        status="failed",
+                        message="Bounded Plan 生成或校验失败，拒绝进入 Executor",
+                        duration_ms=round((perf_counter() - plan_started) * 1_000, 2),
+                        details={"error_type": type(exc).__name__},
+                    )
+                )
+                raise
+
+            workflows = {
+                "backtest_strategy": self._run_backtest_workflow,
+                "query_market_data": self._run_market_query_workflow,
+                "external_research": self._run_external_research_workflow,
+                "other": self._run_general_workflow,
+            }
+            payload = await workflows[route.intent](
+                question, events, runtime, gateway, cache_policy
+            )
             cache_task = payload.pop("_cache_task", None)
             cache_ttl = payload.pop("_cache_ttl", None)
             cache_status = payload.get("cache_status", "bypass")
+            plan = runtime.snapshot()
             response = RunResponse(
                 run_id=run_id,
                 status="completed",
                 skill=f"{skill.name}@{skill.version}",
                 question=question,
                 route=route,
+                plan=plan,
                 execution_mode=(
                     "direct"
                     if route.intent == "other"
@@ -625,6 +736,8 @@ class AurumAgent:
                 **payload,
             )
         except Exception as exc:  # noqa: BLE001 -- outer Agent boundary must fail closed
+            if runtime is not None:
+                plan = runtime.snapshot()
             response = RunResponse(
                 run_id=run_id,
                 status="failed",
@@ -632,6 +745,7 @@ class AurumAgent:
                 interpreter="failed-before-artifact",
                 question=question,
                 route=route,
+                plan=plan,
                 summary=f"Agent 已安全停止：{exc}",
                 warnings=["未运行用户提供的代码、SQL 或 Shell。"],
                 events=events,

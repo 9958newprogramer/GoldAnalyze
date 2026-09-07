@@ -4,11 +4,11 @@
 
 AurumLab 的主语是 Agent 工程，不是黄金策略：
 
-> Agent 先进行确定性安全预检，再由 LLM 识别语义意图，加载版本化 Skill，并在独立 Tool Policy 下生成可审计的结构化产物。
+> Agent 先进行确定性安全预检，再由 LLM 识别语义意图，加载版本化 Skill，生成并校验 Bounded Plan，最后在独立 Tool Policy 下执行可审计的结构化任务。
 
 这与 AgentForge 形成互补：AgentForge 重点展示 Agentic RAG 和知识库工作流；AurumLab 重点展示意图路由、Skill/MCP、工具治理、确定性任务执行、降级策略和自动评测。
 
-## v0.4 运行架构
+## v0.5 运行架构
 
 ```text
 Web / HTTP / MCP
@@ -22,6 +22,9 @@ Web / HTTP / MCP
         │     ├── external_research  → external-research
         │     └── other              → general-response
         ├── SkillRegistry: version + allowed_tools + max_tool_calls
+        ├── BoundedPlanner: Skill Manifest → typed ExecutionPlan
+        │       ├── PlanValidator → step/dependency/tool/budget validation
+        │       └── PlanRuntime → authorize each step before execution
         ├── Artifact Memory: fingerprint → exact / candidate / miss
         │       ├── exact hit → reuse snapshot + provenance
         │       └── candidate / miss → execute governed workflow
@@ -46,26 +49,30 @@ v0.3.1 的 Router 返回强类型 `IntentDecision`：意图、Skill、置信度�
 
 每个 Skill 拥有独立版本、步骤、Allowlist 和 Tool 调用预算。Orchestrator 不根据模型自由生成 Tool 名称，而是先加载 Skill，再由 `ToolGateway` 逐次授权。Audit 仅记录 policy、tool、decision、outcome 和 duration，不记录 Secret 或完整参数。
 
-### 3. 外部检索是 Provider，不绑定 Tavily
+### 3. Planner 是 Executor 的前置安全边界
+
+`BoundedPlanner` 从服务端 Skill Manifest 生成类型化 `ExecutionPlan`，而不是让模型自由发明步骤或 Tool。`PlanValidator` 要求步骤与 Manifest 完整一致、依赖只指向已出现步骤、Tool 绑定属于 Allowlist 且计划调用数不超过预算；`PlanRuntime` 在编译、缓存和 Tool 动作真正发生前逐步授权，乱序或绑定漂移会 fail closed。Artifact exact hit 只完成前置步骤，其余步骤明确标记为 skipped。
+
+### 4. 外部检索是 Provider，不绑定 Tavily
 
 `SearchProvider` 协议隔离外部服务。Tavily 是首个 Adapter；无 Key 时返回明确的无来源结果，网络错误则降级为 warning。搜索结果视为不可信输入，经 Pydantic、数量上限和字段长度约束后才能进入结果对象。
 
-### 4. 不执行模型生成代码
+### 5. 不执行模型生成代码
 
 用户输入和模型输出都不可信。AurumLab 只接受 Pydantic 任务规格，领域层执行固定函数；SQLite 行情库只读、参数化查询，标识符经过校验。这样每次 Run 都可测试、比较和持久化。
 
-### 5. 暂不使用 LangGraph
+### 6. 暂不使用 LangGraph
 
 AgentForge 已展示 LangGraph。当前显式 Orchestrator 更能突出路由、Skill、Policy 与执行语义；等异步任务、断点恢复或人工审批成为真实需求后，再引入 checkpoint 图编排。
 
-### 6. 相似不等于可复用
+### 7. 相似不等于可复用
 
 只有规范化任务规格和数据版本完全一致时才自动复用。结构化相似度超过阈值只产生 `semantic_candidate`，新策略仍调用领域 Tool；这避免了用 10/30 均线的结果回答 11/31 均线。回测依赖行情版本，行情和外部检索还受 TTL 约束。详见 [`ARTIFACT_MEMORY.md`](ARTIFACT_MEMORY.md)。
 
 ## 评测架构
 
 ```text
-golden.v3.jsonl (16 cases)
+golden.v4.jsonl (16 cases)
         ↓
 EvalRunner → real AurumAgent → Run + Trace + Tool Audit
         ↓
@@ -83,10 +90,10 @@ EvalReportRepository → CLI exit code / API / Web panel
 
 ## 威胁模型
 
-| 边界 | 风险 | v0.4 控制 |
+| 边界 | 风险 | v0.5 控制 |
 |---|---|---|
 | HTTP/MCP 输入 | 超长输入、Prompt Injection、破坏指令 | 长度校验；Tool 前威胁预检；fail closed |
-| 路由与 Skill | 误路由、模型输出越权 | Pydantic 枚举；服务端 Skill 映射；Golden Set；Per-Skill Allowlist 与预算 |
+| 路由、Plan 与 Skill | 误路由、乱序或越权计划 | Pydantic 枚举；服务端 Skill 映射；Plan Validator/Runtime；Per-Skill Allowlist 与预算 |
 | LLM 输出 | 非法字段、代码或 SQL | `extra=forbid`；枚举/范围；确定性 fallback |
 | 外部搜索 | 超时、重定向、不可信内容 | HTTPS；8 秒超时；不跟随重定向；有界验证 |
 | 行情 SQLite | SQL 注入、意外写入 | `mode=ro`；参数化值；标识符校验 |
@@ -124,14 +131,35 @@ EvalReportRepository → CLI exit code / API / Web panel
 
 这里实现“相同问题快速返回”的工程能力，但不扩展成另一个知识库项目。
 
-### v0.5（长任务与可观测）
+### v0.5（已完成：受约束计划与执行）
+
+- 类型化 `ExecutionPlan`、control/tool step、显式依赖与稳定 Plan ID。
+- Plan Validator 拒绝未知/重复步骤、前向或循环依赖、越权 Tool、Tool 伪装和超预算计划。
+- Plan Runtime 在实际动作前强制校验顺序和 Tool 绑定，并记录 completed/skipped/failed step。
+- Web/API/MCP 统一返回 Plan；Web UI 展示执行计划及最终状态。
+- Golden Set v4 将 Plan 有效性及 Plan/Event 轨迹一致性纳入 Workflow Integrity。
+
+### v0.6（MCP Client 与动态工具目录）
+
+- MCP Client 动态发现、Schema 指纹与兼容检查。
+- Tool 命名空间、连接超时、健康状态与故障隔离。
+
+### v0.7（治理审批）
+
+- Tool 风险分级和 allow/deny/review 三态策略。
+- 可过期、不可重放的人工审批凭证与状态机。
+
+### v0.8（长任务执行）
 
 - Worker 执行新回测，SSE 推送阶段进度。
 - 幂等、取消、超时、有限重试与恢复。
+
+### v0.9（可观测）
+
 - OpenTelemetry 串联 HTTP → Agent → Tool → Store。
 - 延迟、失败率、缓存命中率和 Tool 调用量仪表盘。
 
-### v0.6（招聘展示增强）
+### v1.0-resume（招聘展示增强）
 
 - Router 离线混淆矩阵与对抗集扩容。
 - MCP Client 动态发现和 Tool schema 兼容检查。
@@ -143,6 +171,6 @@ EvalReportRepository → CLI exit code / API / Web panel
 2. 展示行情查询不触发回测、普通问题不触发外部服务。
 3. 输入 Prompt Injection，展示在零 Tool 调用时拒绝。
 4. 通过 MCP 调用同一请求，再用 Run Resource 读取结果。
-5. 运行 Golden Set v3，展示 16 条案例和包含复用效率的确定性 CI 门禁。
+5. 运行 Golden Set v4，展示 16 条案例、Plan/Event 一致性和复用效率门禁。
 6. 连续提问等价策略，展示 miss 与 exact hit 的耗时、Tool 调用和来源 Run 差异。
 7. 将参数改为相近值，展示 semantic candidate 仍重新执行的正确性边界。

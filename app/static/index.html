@@ -19,7 +19,7 @@
       </header>
 
       <section class="hero">
-        <p class="eyebrow">LLM ROUTER · ARTIFACT MEMORY · GOVERNED TOOLS · MCP</p>
+        <p class="eyebrow">LLM ROUTER · BOUNDED PLAN · GOVERNED EXECUTOR · MCP</p>
         <h1>新任务完整执行，旧结果<br /><span>带着出处快速复用</span></h1>
         <p class="lede">黄金只是可验证的业务场景。Agent 将自然语言编译成稳定任务指纹：相同规格复用结构化 Artifact，相似但不同的策略仍重新执行，并完整记录来源、失效原因和节省成本。</p>
       </section>
@@ -60,6 +60,7 @@
           <dl class="runtime-list">
             <div><dt>Active Skills</dt><dd id="skill-name">加载中</dd></div>
             <div><dt>Intent Router</dt><dd id="router-name">检测中</dd></div>
+            <div><dt>Bounded Planner</dt><dd id="planner-name">检测中</dd></div>
             <div><dt>Interpreter</dt><dd id="interpreter-mode">检测中</dd></div>
             <div><dt>Data Source</dt><dd id="data-source">检测中</dd></div>
             <div><dt>Search Provider</dt><dd id="search-provider">检测中</dd></div>
@@ -79,7 +80,7 @@
 
       <section class="quality panel" aria-labelledby="quality-title">
         <div class="quality-copy">
-          <p class="kicker">QUALITY GATE · GOLDEN SET V3</p>
+          <p class="kicker">QUALITY GATE · GOLDEN SET V4</p>
           <h2 id="quality-title">Agent Eval</h2>
           <p>用四类意图、对抗请求和重复任务评估路由、工作流、Tool Policy、结构化输出与 Artifact 复用。结果可持久化，也可作为 CI 回归门禁。</p>
           <div class="rubric" aria-label="评测权重">
@@ -119,8 +120,14 @@
           </article>
         </div>
 
+        <article class="panel plan-panel">
+          <div class="panel-heading compact"><div><p class="kicker">03 · BOUNDED PLAN</p><h2>受约束执行计划</h2></div></div>
+          <p id="plan-meta" class="plan-meta"></p>
+          <ol id="execution-plan" class="execution-plan"></ol>
+        </article>
+
         <article class="panel trace-panel">
-          <div class="panel-heading compact"><div><p class="kicker">03 · TRACE</p><h2>决策与工具执行轨迹</h2></div></div>
+          <div class="panel-heading compact"><div><p class="kicker">04 · TRACE</p><h2>决策与工具执行轨迹</h2></div></div>
           <ol id="trace"></ol>
         </article>
       </section>

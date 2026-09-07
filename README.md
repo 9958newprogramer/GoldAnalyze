@@ -1,10 +1,10 @@
 # AurumLab
 
-AurumLab 是一个**面向 Agent 开发求职**的可运行作品集项目。黄金是可验证的业务场景，不是项目卖点；项目重点是 LLM 意图路由、版本化 Skill、受治理 Tool、MCP、结构化产物、审计轨迹和自动评测。
+AurumLab 是一个**面向 Agent 开发求职**的可运行作品集项目。黄金是可验证的业务场景，不是项目卖点；项目重点是 LLM 意图路由、Bounded Planner、版本化 Skill、受治理 Tool、MCP、结构化产物、审计轨迹和自动评测。
 
 > 只做研究与历史实验，不连接实盘，不执行用户提供的 Python、SQL 或 Shell，不构成投资建议。
 
-## v0.4 已实现的闭环
+## v0.5 已实现的闭环
 
 ```mermaid
 flowchart LR
@@ -14,15 +14,16 @@ flowchart LR
     C -. 模型失败/未配置 .-> L[Rule Fallback]
     L --> D
     C --> D{选择 Skill}
-    D --> E[策略回测]
-    D --> F[行情查询]
-    D --> G[外部研究]
-    D --> H[直接回答]
-    E & F & G --> M{Artifact Memory}
+    D --> P[Bounded Planner]
+    P --> V{Plan Validator}
+    V -->|invalid| R
+    V --> Q[编译类型化任务规格]
+    Q --> M{Artifact Memory}
     M -->|exact hit| X[复用结构化 Artifact]
-    M -->|semantic candidate / miss| I[Per-Skill Tool Policy]
-    H --> I
-    I --> J[结构化结果 + Trace + Audit]
+    M -->|semantic candidate / miss| E[Deterministic Executor]
+    E --> I[Per-Skill Tool Policy]
+    I --> F[策略回测 / 行情查询 / 外部研究 / 直接回答]
+    F --> J[结构化结果 + Trace + Audit]
     X & J --> K[SQLite 持久化 + Provenance]
 ```
 
@@ -34,6 +35,12 @@ flowchart LR
 | `other` | `general-response` | 能力边界内的直接回答 | 1 |
 
 危险指令会在 LLM、Skill 和 Tool 执行前拒绝，并记录 `route_intent → policy_reject`。允许执行的任务为每次 Tool 授权与执行生成审计记录，但不记录 API Key 或完整 Tool 参数。模型只能返回类型化意图，`intent → skill` 映射由服务端代码控制。
+
+## Bounded Planner
+
+选定 Skill 后，Planner 从服务端 Skill Manifest 编译有序 `ExecutionPlan`，区分 control step 与 tool step，并显式声明依赖、Tool 绑定和调用预算。独立 `PlanValidator` 会在执行前拒绝未知/重复步骤、前向或循环依赖、越权 Tool、伪装的 Tool step 和超预算计划；`PlanRuntime` 则在每一步实际动作发生前检查顺序与 Tool 绑定，防止 Executor 偏离已验证计划。
+
+API、MCP 和 Web UI 均返回同一个 Plan，包括已完成、跳过和失败步骤。Artifact exact hit 会完成编译与缓存检查，并把后续领域步骤标记为 skipped，而不是伪造完整执行轨迹。
 
 ## 立即运行
 
@@ -56,7 +63,7 @@ python3.12 -m venv .venv
 你好，你能做什么？
 ```
 
-统一入口为 `POST /api/runs`。响应包含路由决策、选中的 Skill、任务规格、领域产物、Agent Event、Tool Audit、`cache_status`、来源 Run ID 和可再次读取的 Run ID。`cache_policy` 支持 `use`（默认）、`refresh` 和 `bypass`。
+统一入口为 `POST /api/runs`。响应包含路由决策、选中的 Skill、已验证的 `ExecutionPlan`、任务规格、领域产物、Agent Event、Tool Audit、`cache_status`、来源 Run ID 和可再次读取的 Run ID。`cache_policy` 支持 `use`（默认）、`refresh` 和 `bypass`。
 
 ## Artifact Memory
 
@@ -115,7 +122,7 @@ Provider 使用 HTTPS、8 秒超时、禁止自动重定向、最多 10 个结�
 
 ## Agent Eval 质量门禁
 
-[`evals/golden.v3.jsonl`](evals/golden.v3.jsonl) 包含 16 个案例，覆盖四类意图、日线/小时线参数、“1小时K”回归、行情查询、外部检索降级、繁体输入、Prompt Injection 拒绝和重复任务复用。
+[`evals/golden.v4.jsonl`](evals/golden.v4.jsonl) 包含 16 个案例，覆盖四类意图、日线/小时线参数、“1小时K”回归、行情查询、外部检索降级、繁体输入、Prompt Injection 拒绝和重复任务复用，并校验 Plan 与 Event 执行轨迹一致。
 
 | 维度 | 权重 | 检查内容 |
 |---|---:|---|
@@ -202,6 +209,6 @@ tests/
 docs/
 ```
 
-v0.4 已实现结果指纹、请求内短期记忆和 SQLite 长期复用；v0.5 将增加异步 Worker、SSE、取消/超时/重试和 OpenTelemetry。详见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)、[`docs/ARTIFACT_MEMORY.md`](docs/ARTIFACT_MEMORY.md) 与 [`docs/RESUME.md`](docs/RESUME.md)。
+v0.5 已实现受约束计划的编译、执行前校验和运行时逐步授权；v0.6 将增加 MCP Client、动态 Tool 发现和 Schema 兼容检查。详见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)、[`docs/ARTIFACT_MEMORY.md`](docs/ARTIFACT_MEMORY.md) 与 [`docs/RESUME.md`](docs/RESUME.md)。
 
 持续迭代的当前状态、验收证据、下一步和掉线恢复方式，以 [`docs/PROGRESS.md`](docs/PROGRESS.md) 为唯一进度真相源。

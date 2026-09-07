@@ -121,6 +121,28 @@ def _score_workflow(case: EvalCase, run: RunResponse) -> EvalDimension:
             "Agent Event 状态不符合预期",
         ),
     ]
+    if case.expected_artifact != "rejected":
+        plan_step_ids = [step.step_id for step in run.plan.steps] if run.plan else []
+        observed_plan_steps = [stage for stage in actual_stages if stage in plan_step_ids]
+        checks.extend(
+            [
+                (run.plan is not None and run.plan.validated, "缺少已验证的 ExecutionPlan"),
+                (
+                    run.plan is not None
+                    and run.route is not None
+                    and run.plan.skill == run.route.skill,
+                    "ExecutionPlan 与路由选择的 Skill 不一致",
+                ),
+                (
+                    run.plan is not None and run.plan.completed_steps == observed_plan_steps,
+                    "ExecutionPlan 完成轨迹与 Agent Event 不一致",
+                ),
+                (
+                    run.plan is not None and run.plan.planned_tool_calls <= run.plan.max_tool_calls,
+                    "ExecutionPlan 超出 Tool 调用预算",
+                ),
+            ]
+        )
     failures = [detail for passed, detail in checks if not passed]
     return _dimension(
         sum(passed for passed, _ in checks) / len(checks),
@@ -286,10 +308,18 @@ def evaluate_case(case: EvalCase, run: RunResponse, latency_ms: float) -> EvalCa
 
 
 class EvalRunner:
-    def __init__(self, agent: AurumAgent, dataset_path: Path, dataset_version: str = "v3"):
+    def __init__(
+        self,
+        agent: AurumAgent,
+        dataset_path: Path,
+        dataset_version: str | None = None,
+    ):
         self.agent = agent
         self.dataset_path = dataset_path
-        self.dataset_version = dataset_version
+        stem_parts = dataset_path.stem.rsplit(".", maxsplit=1)
+        self.dataset_version = dataset_version or (
+            stem_parts[-1] if len(stem_parts) == 2 else "unversioned"
+        )
 
     async def run(self, threshold: float = 90.0) -> EvalReport:
         if not 0 <= threshold <= 100:

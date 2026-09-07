@@ -55,6 +55,7 @@ async def health() -> dict[str, object]:
         "version": __version__,
         "router": services.agent.router.name,
         "router_mode": services.agent.router.mode,
+        "planner": services.agent.planner.name,
         "router_model": services.settings.router_llm_model,
         "router_llm_configured": bool(services.settings.router_llm_api_key),
         "skills_count": len(services.skills.list()),

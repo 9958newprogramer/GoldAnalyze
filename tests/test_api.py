@@ -13,6 +13,7 @@ def test_health_and_home_are_available():
     assert health.json()["status"] == "ok"
     assert health.json()["skills_count"] == 4
     assert health.json()["router"].startswith("governed-llm-router")
+    assert health.json()["planner"].startswith("deterministic-skill-planner")
     assert health.json()["router_mode"] == "rule-fallback"
     assert health.json()["router_llm_configured"] is False
     assert home.status_code == 200
@@ -34,7 +35,9 @@ def test_run_api_returns_trace_and_metrics():
     assert payload["status"] == "completed"
     assert payload["metrics"]["trade_count"] >= 0
     assert payload["route"]["intent"] == "backtest_strategy"
-    assert len(payload["events"]) == 8
+    assert len(payload["events"]) == 9
+    assert payload["plan"]["validated"] is True
+    assert payload["plan"]["planned_tool_calls"] == 4
     assert payload["cache_status"] == "bypass"
 
 
@@ -59,7 +62,7 @@ def test_eval_api_runs_versioned_quality_gate():
     assert len(cases.json()) == 16
     assert response.status_code == 200
     payload = response.json()
-    assert payload["dataset_version"] == "v3"
+    assert payload["dataset_version"] == "v4"
     assert payload["passed"] is True
     assert payload["score"] == 100
     assert payload["passed_cases"] == payload["total_cases"] == 16

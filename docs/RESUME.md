@@ -2,7 +2,7 @@
 
 ## 项目一句话
 
-设计并实现一个多 Skill Agent 执行平台：将自然语言请求路由到策略回测、只读行情查询、外部研究或直接回答工作流，并通过 Tool Policy、MCP、审计轨迹和自动评测保障可控执行。
+设计并实现一个多 Skill Agent 执行平台：通过 LLM Router 理解语义意图，将版本化 Skill 编译为受约束执行计划，并由确定性 Executor 在 Tool Policy、MCP、审计轨迹和自动评测保护下生成结构化产物。
 
 ## v0.4 可写入简历的要点
 
@@ -16,12 +16,18 @@
 
 测试数量、质量门禁分数和耗时应以最新 `make verify` 输出为准，不在简历里写无法复现的固定数字。
 
+## v0.5 新增的可写要点
+
+- 设计 `BoundedPlanner → PlanValidator → PlanRuntime` 三层计划链路，从 Skill Manifest 生成类型化 ExecutionPlan，并在每个 control/tool 动作发生前校验顺序、依赖、Tool 绑定和调用预算。
+- 对未知/重复步骤、前向或循环依赖、越权 Tool、Tool 伪装与超预算计划 fail closed；Artifact exact hit 显式标记未执行领域步骤为 skipped，避免伪造执行轨迹。
+- 将 Plan 统一暴露给 Web、HTTP API 与 MCP，并在 Golden Set v4 中验证 Plan 有效性及 Plan/Event 执行轨迹一致性。
+
 ## 面试时主动强调
 
 - 黄金仅用作有确定性输入输出的工具场景，工程重点是 Agent 的路由、能力边界、协议暴露、治理、可观测与评测。
 - 与 AgentForge 的区别：AgentForge 证明 Agentic RAG；AurumLab 证明“识别意图—选择 Skill—受控调用 Tool—生成 Artifact—评测与复用”的执行系统。
 - LLM 负责语义理解，代码负责安全预检、类型校验、Skill 映射和 Tool 权限；规则 Router 仅承担可观测的故障降级。
 
-## 下一版本增量表述
+## 下一版本增量表述（尚不可作为已完成能力）
 
-v0.5 可增加：基于 Worker + SSE 的长任务执行，支持幂等、取消、超时、有限重试和断点恢复，并以 OpenTelemetry 串联 HTTP → Agent → Tool → Store。
+v0.6 将增加 MCP Client、动态 Tool 发现、Schema 指纹与兼容检查；完成并验证后再加入正式简历。
