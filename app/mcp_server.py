@@ -18,7 +18,7 @@ mcp = MCPServer(
     name="aurumlab",
     title="AurumLab Multi-Skill Agent Server",
     description=(
-        "An LLM-routed, governed Agent with versioned Skills and persistent Artifact Memory."
+        "An LLM-routed, governed Agent with bounded plans, versioned Skills, and Artifact Memory."
     ),
     instructions=(
         "Use handle_agent_request for any natural-language task. "

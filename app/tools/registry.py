@@ -25,6 +25,9 @@ class ToolRegistry:
         except KeyError as exc:
             raise KeyError(f"Tool 未注册：{name}") from exc
 
+    def contains(self, name: str) -> bool:
+        return name in self._handlers
+
     def list_names(self) -> list[str]:
         return sorted(self._handlers)
 

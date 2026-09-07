@@ -54,6 +54,10 @@ async function loadRuntime() {
         ? `${health.artifact_cache_entries}/${health.artifact_cache_max_entries} active · SQLite`
         : "disabled",
     );
+    setText(
+      "#mcp-client",
+      `${health.mcp_client_connected_servers} server · ${health.mcp_client_discovered_tools} namespaced tools`,
+    );
   } catch {
     setText("#health-label", "API unavailable");
   }

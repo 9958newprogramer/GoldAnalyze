@@ -21,6 +21,23 @@ def test_health_and_home_are_available():
     assert home.headers["x-frame-options"] == "DENY"
 
 
+def test_application_lifespan_discovers_mcp_client_tools():
+    with TestClient(app) as live_client:
+        health = live_client.get("/api/health").json()
+        catalog = live_client.get("/api/mcp/catalog")
+        tools = live_client.get("/api/tools").json()["tools"]
+
+        assert health["mcp_client_connected_servers"] == 1
+        assert health["mcp_client_discovered_tools"] == 2
+        assert catalog.status_code == 200
+        assert catalog.json()["servers"][0]["status"] == "connected"
+        assert {item["qualified_name"] for item in catalog.json()["tools"]} == {
+            "mcp__runtime__describe_runtime_capabilities",
+            "mcp__runtime__profile_text",
+        }
+        assert "mcp__runtime__profile_text" in tools
+
+
 def test_run_api_returns_trace_and_metrics():
     response = client.post(
         "/api/runs",

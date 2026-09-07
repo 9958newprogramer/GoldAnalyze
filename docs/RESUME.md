@@ -22,6 +22,13 @@
 - 对未知/重复步骤、前向或循环依赖、越权 Tool、Tool 伪装与超预算计划 fail closed；Artifact exact hit 显式标记未执行领域步骤为 skipped，避免伪造执行轨迹。
 - 将 Plan 统一暴露给 Web、HTTP API 与 MCP，并在 Golden Set v4 中验证 Plan 有效性及 Plan/Event 执行轨迹一致性。
 
+## v0.6 新增的可写要点
+
+- 实现 MCP Server/Client 双向能力与动态 Tool Catalog，支持进程内及 stdio Transport；将远端工具统一映射为 namespaced Tool，并暴露 Server、协议版本、发现耗时、健康状态和 Schema 指纹。
+- 设计 MCP Schema Compatibility Gate，基于 JSON Schema Draft 2020-12 校验 Input/Output Contract，首次发现自动 Pin；刷新发生 Schema 漂移、Tool 缺失、名称冲突或外部 `$ref` 时 fail closed，并保留 last-known-good Catalog。
+- 将 MCP Remote Tool Adapter 接入既有 Governance Gateway，使动态发现与动态授权解耦；远端调用继续执行 Per-Skill Allowlist、调用预算、参数白名单、超时控制和 authorization/execution Audit。
+- 将 MCP Tool 描述和结构化结果视为不可信输入，对 Prompt Injection、未知参数及过大 Schema/参数/结果进行调用前后拦截；以进程内和真实 stdio 集成测试覆盖发现、调用、漂移、超时及故障隔离。
+
 ## 面试时主动强调
 
 - 黄金仅用作有确定性输入输出的工具场景，工程重点是 Agent 的路由、能力边界、协议暴露、治理、可观测与评测。
@@ -30,4 +37,4 @@
 
 ## 下一版本增量表述（尚不可作为已完成能力）
 
-v0.6 将增加 MCP Client、动态 Tool 发现、Schema 指纹与兼容检查；完成并验证后再加入正式简历。
+v0.7 将增加 Tool 风险分级、allow/deny/review 三态决策以及可过期、不可重放的人工审批凭证；完成并验证后再加入正式简历。

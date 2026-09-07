@@ -10,6 +10,8 @@ from app.agent.router import build_intent_router
 from app.config import Settings, settings
 from app.domain.market_data import build_market_repository
 from app.evals.runner import EvalRunner
+from app.mcp_client import MCPClientManager, MCPServerBinding, MCPServerSpec
+from app.mcp_provider import mcp_tool_provider
 from app.memory import ArtifactCache
 from app.skills.registry import SkillRegistry
 from app.storage import EvalReportRepository, RunRepository
@@ -25,6 +27,7 @@ class Services:
     eval_reports: EvalReportRepository
     agent: AurumAgent
     evaluator: EvalRunner
+    mcp_clients: MCPClientManager
 
 
 def build_services(app_settings: Settings = settings) -> Services:
@@ -49,6 +52,18 @@ def build_services(app_settings: Settings = settings) -> Services:
         research_cache_ttl_seconds=app_settings.research_cache_ttl_seconds,
     )
     evaluator = EvalRunner(agent=agent, dataset_path=app_settings.resolved_eval_dataset_path)
+    mcp_clients = MCPClientManager(
+        [
+            MCPServerBinding(
+                spec=MCPServerSpec(
+                    server_id="aurumlab-runtime-tools",
+                    namespace="runtime",
+                    transport="in_process",
+                ),
+                target=mcp_tool_provider,
+            )
+        ]
+    )
     return Services(
         settings=app_settings,
         skills=skills,
@@ -57,4 +72,5 @@ def build_services(app_settings: Settings = settings) -> Services:
         eval_reports=eval_reports,
         agent=agent,
         evaluator=evaluator,
+        mcp_clients=mcp_clients,
     )

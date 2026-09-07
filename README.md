@@ -1,10 +1,10 @@
 # AurumLab
 
-AurumLab 是一个**面向 Agent 开发求职**的可运行作品集项目。黄金是可验证的业务场景，不是项目卖点；项目重点是 LLM 意图路由、Bounded Planner、版本化 Skill、受治理 Tool、MCP、结构化产物、审计轨迹和自动评测。
+AurumLab 是一个**面向 Agent 开发求职**的可运行作品集项目。黄金是可验证的业务场景，不是项目卖点；项目重点是 LLM 意图路由、Bounded Planner、版本化 Skill、受治理 Tool、MCP Client/Server、结构化产物、审计轨迹和自动评测。
 
 > 只做研究与历史实验，不连接实盘，不执行用户提供的 Python、SQL 或 Shell，不构成投资建议。
 
-## v0.5 已实现的闭环
+## v0.6 已实现的闭环
 
 ```mermaid
 flowchart LR
@@ -22,6 +22,8 @@ flowchart LR
     M -->|exact hit| X[复用结构化 Artifact]
     M -->|semantic candidate / miss| E[Deterministic Executor]
     E --> I[Per-Skill Tool Policy]
+    S[MCP Client] --> T[动态 Tool Catalog<br/>Namespace + Schema Pin]
+    T --> I
     I --> F[策略回测 / 行情查询 / 外部研究 / 直接回答]
     F --> J[结构化结果 + Trace + Audit]
     X & J --> K[SQLite 持久化 + Provenance]
@@ -41,6 +43,14 @@ flowchart LR
 选定 Skill 后，Planner 从服务端 Skill Manifest 编译有序 `ExecutionPlan`，区分 control step 与 tool step，并显式声明依赖、Tool 绑定和调用预算。独立 `PlanValidator` 会在执行前拒绝未知/重复步骤、前向或循环依赖、越权 Tool、伪装的 Tool step 和超预算计划；`PlanRuntime` 则在每一步实际动作发生前检查顺序与 Tool 绑定，防止 Executor 偏离已验证计划。
 
 API、MCP 和 Web UI 均返回同一个 Plan，包括已完成、跳过和失败步骤。Artifact exact hit 会完成编译与缓存检查，并把后续领域步骤标记为 skipped，而不是伪造完整执行轨迹。
+
+## MCP Client 与动态 Tool Catalog
+
+应用启动时，真实 MCP Client 会连接一个独立的非金融 Tool Provider，动态执行 `tools/list`，将远端 Tool 转换为 `mcp__<namespace>__<tool>` 名称，并登记到现有 Tool Registry。发现不等于授权：只有版本化 Skill 明确 Allowlist 的远端 Tool 才能通过 `ToolGateway`，且仍消耗同一调用预算、生成同一授权/执行 Audit。
+
+所有 JSON Schema 使用 Draft 2020-12 校验并生成 16 位稳定指纹。首次发现后自动 pin；同名 Tool 的 Schema 漂移、命名冲突、外部 `$ref`、未知参数、超时、过大输入输出以及 Tool 描述/结果中的 Prompt Injection 都会 fail closed。刷新失败时保留 last-known-good Catalog，并把 Server 标记为 `degraded`；连接失败只隔离对应 Server，不阻断主 Agent。
+
+`GET /api/mcp/catalog` 可查看 Server 健康、协议/实现版本、命名空间、Tool Schema 和指纹。默认 Provider 只提供运行时能力描述与文本结构统计，用来证明 MCP 和治理架构可迁移到非金融场景，不参与黄金计算。
 
 ## 立即运行
 
@@ -139,7 +149,7 @@ Provider 使用 HTTPS、8 秒超时、禁止自动重定向、最多 10 个结�
 
 存在任一失败维度时案例失败；总分不达阈值或存在失败案例时 CLI 返回非零退出码，可直接接入 CI。Web UI、API 和 CLI 使用同一个真实 Agent，而不是评测替身。
 
-## MCP Server
+## MCP Client / Server
 
 MCP 与 HTTP API 复用同一个 Agent、Skill Registry 和 Run Store：
 
@@ -154,9 +164,13 @@ MCP 与 HTTP API 复用同一个 Agent、Skill Registry 和 Run Store：
 
 ```bash
 .venv/bin/aurumlab-mcp
+# 独立的非金融 MCP Tool Provider（用于 stdio Client 演示）
+.venv/bin/aurumlab-mcp-tools
 # 或
 MCP_TRANSPORT=streamable-http .venv/bin/aurumlab-mcp
 ```
+
+HTTP 运行时会自动连接内置 Provider；Tool Catalog 位于 `GET /api/mcp/catalog`。Client 同时覆盖进程内与真实 stdio 生命周期，当前有意不接受来自用户请求的任意 MCP URL 或命令配置。
 
 ## 接入本地 SQLite 行情库
 
@@ -188,7 +202,7 @@ LLM_MODEL=gpt-5-mini
 make verify
 ```
 
-测试覆盖路由、任务编译、策略解释、回测语义、行情查询、Search Provider 替身、危险请求预检、持久化、Eval、HTTP API、安全响应头及 MCP discovery。
+测试覆盖路由、任务编译、策略解释、回测语义、行情查询、Search Provider 替身、危险请求预检、持久化、Eval、HTTP API、安全响应头，以及 MCP 进程内/stdio discovery、Schema 漂移、命名空间、参数校验、超时、Prompt Injection 和治理审计。
 
 ## 项目结构与后续版本
 
@@ -198,17 +212,19 @@ app/
   domain/         # 行情适配器与确定性回测
   evals/          # Golden Set、Rubric、Runner、CLI
   memory.py       # 任务指纹、相似度、SQLite Artifact Cache
+  mcp_client.py   # MCP 会话、动态 Catalog、Schema Pin、治理适配
+  mcp_provider.py # 独立非金融 MCP Tool Provider
   skills/         # Skill Registry runtime
   tools/          # Tool Registry、Policy Gateway、Search Provider
   static/         # 多意图反馈 UI
   main.py         # FastAPI
-  mcp_server.py   # MCP Tools / Resources
+  mcp_server.py   # Agent MCP Tools / Resources
 skills/           # 4 个版本化 Skill 包
-evals/            # v1、v2、v3 版本化评测集
+evals/            # v1—v4 版本化评测集
 tests/
 docs/
 ```
 
-v0.5 已实现受约束计划的编译、执行前校验和运行时逐步授权；v0.6 将增加 MCP Client、动态 Tool 发现和 Schema 兼容检查。详见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)、[`docs/ARTIFACT_MEMORY.md`](docs/ARTIFACT_MEMORY.md) 与 [`docs/RESUME.md`](docs/RESUME.md)。
+v0.6 已实现 MCP Client、动态 Tool 发现、Schema Pin 和远端 Tool 治理适配；v0.7 将增加 allow/deny/review 风险策略与不可重放的人工审批凭证。详见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)、[`docs/MCP_CLIENT.md`](docs/MCP_CLIENT.md)、[`docs/ARTIFACT_MEMORY.md`](docs/ARTIFACT_MEMORY.md) 与 [`docs/RESUME.md`](docs/RESUME.md)。
 
 持续迭代的当前状态、验收证据、下一步和掉线恢复方式，以 [`docs/PROGRESS.md`](docs/PROGRESS.md) 为唯一进度真相源。

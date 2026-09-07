@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import uvicorn
@@ -14,18 +15,31 @@ from app.bootstrap import build_services
 from app.config import settings
 from app.evals.models import EvalCase, EvalReport
 from app.evals.runner import load_eval_cases
+from app.mcp_client import MCPToolCatalog
 from app.models import CacheStats, RunRequest, RunResponse, SkillDescriptor
 
 services = build_services()
 static_root = Path(__file__).resolve().parent / "static"
 
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    await services.mcp_clients.start()
+    services.mcp_clients.register_tools(services.agent.tools)
+    try:
+        yield
+    finally:
+        await services.mcp_clients.stop()
+
+
 app = FastAPI(
     title="AurumLab",
     version=__version__,
     description=(
-        "Agent engineering platform with versioned Skills, governed tools, Artifact Memory, "
-        "and MCP exposure."
+        "Agent engineering platform with versioned Skills, bounded plans, governed tools, "
+        "MCP Client/Server, and Artifact Memory."
     ),
+    lifespan=lifespan,
 )
 app.mount("/static", StaticFiles(directory=static_root), name="static")
 
@@ -50,6 +64,7 @@ async def index() -> FileResponse:
 
 @app.get("/api/health")
 async def health() -> dict[str, object]:
+    mcp_catalog = services.mcp_clients.snapshot()
     return {
         "status": "ok",
         "version": __version__,
@@ -64,6 +79,8 @@ async def health() -> dict[str, object]:
         "llm_configured": bool(services.settings.llm_api_key),
         "search_provider": services.agent.search_provider.name,
         "mcp_server_command": "aurumlab-mcp",
+        "mcp_client_connected_servers": mcp_catalog.connected_servers,
+        "mcp_client_discovered_tools": len(mcp_catalog.tools),
         "artifact_cache_enabled": services.artifacts.enabled,
         "artifact_cache_entries": services.artifacts.stats().active_entries,
         "artifact_cache_max_entries": services.artifacts.max_entries,
@@ -78,6 +95,11 @@ async def list_skills() -> list[SkillDescriptor]:
 @app.get("/api/tools")
 async def list_tools() -> dict[str, list[str]]:
     return {"tools": services.agent.tools.list_names()}
+
+
+@app.get("/api/mcp/catalog", response_model=MCPToolCatalog)
+async def mcp_tool_catalog() -> MCPToolCatalog:
+    return services.mcp_clients.snapshot()
 
 
 @app.get("/api/evals/cases", response_model=list[EvalCase])

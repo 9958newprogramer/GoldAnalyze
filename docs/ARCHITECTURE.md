@@ -8,7 +8,7 @@ AurumLab 的主语是 Agent 工程，不是黄金策略：
 
 这与 AgentForge 形成互补：AgentForge 重点展示 Agentic RAG 和知识库工作流；AurumLab 重点展示意图路由、Skill/MCP、工具治理、确定性任务执行、降级策略和自动评测。
 
-## v0.5 运行架构
+## v0.6 运行架构
 
 ```text
 Web / HTTP / MCP
@@ -28,10 +28,15 @@ Web / HTTP / MCP
         ├── Artifact Memory: fingerprint → exact / candidate / miss
         │       ├── exact hit → reuse snapshot + provenance
         │       └── candidate / miss → execute governed workflow
+        ├── MCP Client Manager
+        │       ├── tools/list → namespaced Tool Catalog
+        │       ├── JSON Schema validation + fingerprint pin
+        │       └── health / timeout / last-known-good isolation
         └── ToolGateway: request memory → authorize → execute → audit
                 ├── deterministic backtest tools
                 ├── read-only market query tools
                 ├── bounded SearchProvider
+                ├── governed MCP Tool adapter
                 └── direct-response tool
                           ↓
               RunResponse → SQLite RunRepository + ArtifactCache
@@ -57,15 +62,21 @@ v0.3.1 的 Router 返回强类型 `IntentDecision`：意图、Skill、置信度�
 
 `SearchProvider` 协议隔离外部服务。Tavily 是首个 Adapter；无 Key 时返回明确的无来源结果，网络错误则降级为 warning。搜索结果视为不可信输入，经 Pydantic、数量上限和字段长度约束后才能进入结果对象。
 
-### 5. 不执行模型生成代码
+### 5. MCP 发现与授权严格分离
+
+MCP Client 通过进程内或 stdio transport 动态执行 `tools/list`，但发现成功不授予调用权。远端 Tool 先经过命名空间、Schema、大小、Prompt Injection 与指纹校验，再注册为本地 Adapter；只有 Skill Manifest 明确 Allowlist 后，才能通过原有 Tool Budget 和 Audit。首次发现自动 pin Schema，刷新发生漂移时保留 last-known-good Catalog 并降级 Server 健康状态。
+
+当前 Server Binding 由部署方提供，不允许用户 Prompt 指定命令或 URL；暂不开放远程 HTTP，避免在尚无认证、SSRF 防护与 OAuth Scope 时扩大攻击面。详细约束见 [`MCP_CLIENT.md`](MCP_CLIENT.md)。
+
+### 6. 不执行模型生成代码
 
 用户输入和模型输出都不可信。AurumLab 只接受 Pydantic 任务规格，领域层执行固定函数；SQLite 行情库只读、参数化查询，标识符经过校验。这样每次 Run 都可测试、比较和持久化。
 
-### 6. 暂不使用 LangGraph
+### 7. 暂不使用 LangGraph
 
 AgentForge 已展示 LangGraph。当前显式 Orchestrator 更能突出路由、Skill、Policy 与执行语义；等异步任务、断点恢复或人工审批成为真实需求后，再引入 checkpoint 图编排。
 
-### 7. 相似不等于可复用
+### 8. 相似不等于可复用
 
 只有规范化任务规格和数据版本完全一致时才自动复用。结构化相似度超过阈值只产生 `semantic_candidate`，新策略仍调用领域 Tool；这避免了用 10/30 均线的结果回答 11/31 均线。回测依赖行情版本，行情和外部检索还受 TTL 约束。详见 [`ARTIFACT_MEMORY.md`](ARTIFACT_MEMORY.md)。
 
@@ -90,12 +101,13 @@ EvalReportRepository → CLI exit code / API / Web panel
 
 ## 威胁模型
 
-| 边界 | 风险 | v0.5 控制 |
+| 边界 | 风险 | v0.6 控制 |
 |---|---|---|
 | HTTP/MCP 输入 | 超长输入、Prompt Injection、破坏指令 | 长度校验；Tool 前威胁预检；fail closed |
 | 路由、Plan 与 Skill | 误路由、乱序或越权计划 | Pydantic 枚举；服务端 Skill 映射；Plan Validator/Runtime；Per-Skill Allowlist 与预算 |
 | LLM 输出 | 非法字段、代码或 SQL | `extra=forbid`；枚举/范围；确定性 fallback |
 | 外部搜索 | 超时、重定向、不可信内容 | HTTPS；8 秒超时；不跟随重定向；有界验证 |
+| MCP Server → Client | 恶意 Tool 描述、Schema 漂移、参数/结果注入、DoS | Namespace；Draft 2020-12；Schema Pin；大小/分页/超时限制；Injection 拒绝；故障隔离 |
 | 行情 SQLite | SQL 注入、意外写入 | `mode=ro`；参数化值；标识符校验 |
 | 持久化 | Secret 泄露、缓存污染、陈旧结果 | 参数化 SQL；最小化 Artifact Snapshot；数据版本 + TTL；Run ID 校验 |
 | Eval API | 计算资源滥用 | 固定本地数据集；最多 50 案例 |
@@ -139,10 +151,13 @@ EvalReportRepository → CLI exit code / API / Web panel
 - Web/API/MCP 统一返回 Plan；Web UI 展示执行计划及最终状态。
 - Golden Set v4 将 Plan 有效性及 Plan/Event 轨迹一致性纳入 Workflow Integrity。
 
-### v0.6（MCP Client 与动态工具目录）
+### v0.6（已完成：MCP Client 与动态工具目录）
 
-- MCP Client 动态发现、Schema 指纹与兼容检查。
-- Tool 命名空间、连接超时、健康状态与故障隔离。
+- MCP Client 支持进程内与真实 stdio 生命周期，动态发现独立非金融 Provider。
+- Tool 命名空间、JSON Schema Draft 2020-12 校验、稳定指纹和首次/刷新 Pin。
+- 未知参数、Schema 漂移、命名冲突、Prompt Injection、分页/大小/调用超时 fail closed。
+- 远端 Tool Adapter 复用现有 Skill Allowlist、调用预算和 Tool Audit。
+- HTTP Catalog/Health 暴露 Server 状态、协议/实现版本、Tool 契约和发现耗时。
 
 ### v0.7（治理审批）
 
@@ -162,7 +177,6 @@ EvalReportRepository → CLI exit code / API / Web panel
 ### v1.0-resume（招聘展示增强）
 
 - Router 离线混淆矩阵与对抗集扩容。
-- MCP Client 动态发现和 Tool schema 兼容检查。
 - 增加一个非金融工作流，证明架构可迁移，避免项目被理解为量化策略仓库。
 
 ## 面试演示主线
@@ -171,6 +185,7 @@ EvalReportRepository → CLI exit code / API / Web panel
 2. 展示行情查询不触发回测、普通问题不触发外部服务。
 3. 输入 Prompt Injection，展示在零 Tool 调用时拒绝。
 4. 通过 MCP 调用同一请求，再用 Run Resource 读取结果。
-5. 运行 Golden Set v4，展示 16 条案例、Plan/Event 一致性和复用效率门禁。
-6. 连续提问等价策略，展示 miss 与 exact hit 的耗时、Tool 调用和来源 Run 差异。
-7. 将参数改为相近值，展示 semantic candidate 仍重新执行的正确性边界。
+5. 查看 MCP Catalog，展示 stdio 动态发现、namespaced Tool、Schema 指纹和健康状态。
+6. 运行 Golden Set v4，展示 16 条案例、Plan/Event 一致性和复用效率门禁。
+7. 连续提问等价策略，展示 miss 与 exact hit 的耗时、Tool 调用和来源 Run 差异。
+8. 将参数改为相近值，展示 semantic candidate 仍重新执行的正确性边界。
