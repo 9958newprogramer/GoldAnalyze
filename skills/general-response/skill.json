@@ -1,0 +1,12 @@
+{
+  "name": "general-response",
+  "version": "0.1.0",
+  "description": "处理无需领域工具的问题、能力说明以及被治理策略拒绝的请求。",
+  "allowed_tools": [
+    "compose_general_response"
+  ],
+  "max_tool_calls": 1,
+  "steps": [
+    "compose_general_response"
+  ]
+}

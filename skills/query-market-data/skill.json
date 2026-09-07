@@ -1,0 +1,16 @@
+{
+  "name": "query-market-data",
+  "version": "0.2.0",
+  "description": "将行情查询编译为受约束参数，读取本地只读数据并返回可复用的结构化快照。",
+  "allowed_tools": [
+    "query_market_data",
+    "summarize_market_query"
+  ],
+  "max_tool_calls": 2,
+  "steps": [
+    "compile_market_query",
+    "cache_lookup",
+    "query_market_data",
+    "summarize_market_query"
+  ]
+}

@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="AurumLab Agent execution and artifact-memory platform" />
+    <title>AurumLab · Agent Experiment Console</title>
+    <link rel="icon" href="/static/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <a class="brand" href="/" aria-label="AurumLab home">
+          <span class="brand-mark">Au</span>
+          <span><strong>AurumLab</strong><small>Agent Experiment Console</small></span>
+        </a>
+        <div class="status"><span class="pulse"></span><span id="health-label">正在连接</span></div>
+      </header>
+
+      <section class="hero">
+        <p class="eyebrow">LLM ROUTER · ARTIFACT MEMORY · GOVERNED TOOLS · MCP</p>
+        <h1>新任务完整执行，旧结果<br /><span>带着出处快速复用</span></h1>
+        <p class="lede">黄金只是可验证的业务场景。Agent 将自然语言编译成稳定任务指纹：相同规格复用结构化 Artifact，相似但不同的策略仍重新执行，并完整记录来源、失效原因和节省成本。</p>
+      </section>
+
+      <section class="workspace">
+        <article class="composer panel">
+          <div class="panel-heading">
+            <div><p class="kicker">01 · REQUEST</p><h2>描述你的任务</h2></div>
+            <span class="badge">4 routed intents</span>
+          </div>
+          <form id="run-form">
+            <label for="question">自然语言任务</label>
+            <textarea id="question" name="question" maxlength="1000" required>使用黄金日K，20日均线上穿60日均线做多，下穿平仓；2019年至2025年回测，手续费2个基点，滑点3个基点。</textarea>
+            <div class="examples" aria-label="示例问题">
+              <button type="button" class="example" data-query="使用黄金日K，10日均线上穿30日均线做多，下穿平仓；2020年至2025年回测。">10 / 30 日线</button>
+              <button type="button" class="example" data-query="给我黄金最近12根1小时K线。">查询行情</button>
+              <button type="button" class="example" data-query="搜索互联网最新黄金新闻。">外部研究</button>
+              <button type="button" class="example" data-query="你好，你能做什么？">能力说明</button>
+            </div>
+            <div class="form-footer">
+              <div class="policy-control">
+                <label for="cache-policy">Artifact policy</label>
+                <select id="cache-policy" name="cache-policy">
+                  <option value="use">优先复用</option>
+                  <option value="refresh">强制刷新</option>
+                  <option value="bypass">跳过缓存</option>
+                </select>
+              </div>
+              <button id="submit-button" class="primary" type="submit"><span>运行 Agent</span><span aria-hidden="true">↗</span></button>
+            </div>
+          </form>
+        </article>
+
+        <aside class="runtime panel">
+          <div class="panel-heading compact">
+            <div><p class="kicker">RUNTIME</p><h2>能力边界</h2></div>
+          </div>
+          <dl class="runtime-list">
+            <div><dt>Active Skills</dt><dd id="skill-name">加载中</dd></div>
+            <div><dt>Intent Router</dt><dd id="router-name">检测中</dd></div>
+            <div><dt>Interpreter</dt><dd id="interpreter-mode">检测中</dd></div>
+            <div><dt>Data Source</dt><dd id="data-source">检测中</dd></div>
+            <div><dt>Search Provider</dt><dd id="search-provider">检测中</dd></div>
+            <div><dt>Artifact Memory</dt><dd id="cache-runtime">检测中</dd></div>
+            <div><dt>MCP Server</dt><dd>aurumlab-mcp</dd></div>
+          </dl>
+          <div class="boundary">
+            <span>Policy</span>
+            <p>Per-Skill Tool Budget<br />Allowlist · Preflight deny · Audit</p>
+          </div>
+        </aside>
+      </section>
+
+      <section id="live-state" class="live-state panel" aria-live="polite">
+        <span class="loader"></span><div><p class="kicker">AGENT STATUS</p><strong id="live-message">等待任务</strong></div>
+      </section>
+
+      <section class="quality panel" aria-labelledby="quality-title">
+        <div class="quality-copy">
+          <p class="kicker">QUALITY GATE · GOLDEN SET V3</p>
+          <h2 id="quality-title">Agent Eval</h2>
+          <p>用四类意图、对抗请求和重复任务评估路由、工作流、Tool Policy、结构化输出与 Artifact 复用。结果可持久化，也可作为 CI 回归门禁。</p>
+          <div class="rubric" aria-label="评测权重">
+            <span>Task 40%</span><span>Workflow 20%</span><span>Safety 20%</span><span>Output 10%</span><span>Reuse 10%</span>
+          </div>
+        </div>
+        <div class="quality-score">
+          <span id="eval-gate" class="gate pending">NOT RUN</span>
+          <strong id="eval-score">—</strong>
+          <p id="eval-meta">等待第一次 Golden Set 评测</p>
+          <button id="eval-button" class="primary eval-button" type="button"><span>运行 Eval</span><span aria-hidden="true">↗</span></button>
+        </div>
+        <ol id="eval-cases" class="eval-cases hidden" aria-label="评测案例结果"></ol>
+      </section>
+
+      <section id="results" class="results hidden">
+        <div class="result-heading">
+          <div><p class="kicker">02 · RESULT</p><h2>结构化 Agent 反馈</h2></div>
+          <span id="run-id" class="run-id"></span>
+        </div>
+
+        <div id="warning-box" class="warning-box hidden"></div>
+        <div id="cache-box" class="cache-box hidden"></div>
+        <div id="metrics" class="metrics"></div>
+
+        <div class="result-grid">
+          <article id="chart-panel" class="panel chart-panel">
+            <div class="panel-heading compact"><div><p class="kicker">ARTIFACT</p><h2>Equity Curve</h2></div></div>
+            <svg id="equity-chart" viewBox="0 0 760 260" role="img" aria-label="资金曲线"></svg>
+          </article>
+          <article class="panel summary-panel">
+            <div class="panel-heading compact"><div><p class="kicker">GROUNDED OUTPUT</p><h2>Agent 结论</h2></div></div>
+            <p id="route-decision" class="route-decision"></p>
+            <p id="summary"></p>
+            <pre id="strategy-spec"></pre>
+            <ul id="source-list" class="source-list hidden"></ul>
+          </article>
+        </div>
+
+        <article class="panel trace-panel">
+          <div class="panel-heading compact"><div><p class="kicker">03 · TRACE</p><h2>决策与工具执行轨迹</h2></div></div>
+          <ol id="trace"></ol>
+        </article>
+      </section>
+    </main>
+    <script src="/static/app.js" defer></script>
+  </body>
+</html>

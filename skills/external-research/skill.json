@@ -1,0 +1,16 @@
+{
+  "name": "external-research",
+  "version": "0.2.0",
+  "description": "通过受治理的 Search Provider 查询外部时效知识，并以来源列表生成可追溯摘要。",
+  "allowed_tools": [
+    "search_external_knowledge",
+    "summarize_external_research"
+  ],
+  "max_tool_calls": 2,
+  "steps": [
+    "compile_research_query",
+    "cache_lookup",
+    "search_external_knowledge",
+    "summarize_external_research"
+  ]
+}

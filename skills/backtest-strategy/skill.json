@@ -1,0 +1,20 @@
+{
+  "name": "backtest-strategy",
+  "version": "0.2.0",
+  "description": "将自然语言均线策略编译为受约束规格，调用确定性工具完成数据检查、回测与反馈。",
+  "allowed_tools": [
+    "inspect_market_data",
+    "validate_strategy_spec",
+    "run_backtest",
+    "summarize_result"
+  ],
+  "max_tool_calls": 4,
+  "steps": [
+    "interpret_strategy",
+    "cache_lookup",
+    "inspect_market_data",
+    "validate_strategy_spec",
+    "run_backtest",
+    "summarize_result"
+  ]
+}
