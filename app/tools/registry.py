@@ -5,6 +5,7 @@ from __future__ import annotations
 import hmac
 import re
 from collections.abc import Awaitable, Callable
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from time import perf_counter
 from typing import Any, Literal
@@ -17,6 +18,7 @@ from app.approval import (
     arguments_digest,
 )
 from app.models import ApprovalRequest
+from app.observability import Telemetry
 
 ToolHandler = Callable[..., Awaitable[Any]]
 ToolEffect = Literal["read", "external", "write", "privileged"]
@@ -211,6 +213,7 @@ class ToolGateway:
         approval_token: str | None = None,
         trusted_consumed_approval: ApprovalRequest | None = None,
         on_approval_consumed: Callable[[ApprovalRequest], None] | None = None,
+        telemetry: Telemetry | None = None,
     ):
         self.registry = registry
         self.policy = policy
@@ -220,6 +223,7 @@ class ToolGateway:
         self.approval_token = approval_token
         self.trusted_consumed_approval = trusted_consumed_approval
         self.on_approval_consumed = on_approval_consumed
+        self.telemetry = telemetry
         self.consumed_approval: ApprovalRequest | None = None
         self._request_memory: dict[tuple[str, str], Any] = {}
 
@@ -243,8 +247,54 @@ class ToolGateway:
                     "reason": "unknown_tool",
                 }
             )
+            if self.telemetry is not None:
+                self.telemetry.count(
+                    "aurumlab.agent.tool.decisions",
+                    attributes={"tool": "unknown", "decision": "deny"},
+                )
             raise
         decision = self.policy.evaluate(definition)
+        attributes = {
+            "aurumlab.tool.name": tool_name,
+            "aurumlab.tool.effect": decision.effect,
+            "aurumlab.tool.risk": decision.risk,
+            "aurumlab.tool.decision": decision.action,
+        }
+        scope = (
+            self.telemetry.span("aurumlab.tool.call", attributes=attributes)
+            if self.telemetry is not None
+            else nullcontext()
+        )
+        with scope:
+            if self.telemetry is not None:
+                self.telemetry.count(
+                    "aurumlab.agent.tool.decisions",
+                    attributes={
+                        "tool": tool_name,
+                        "effect": decision.effect,
+                        "risk": decision.risk,
+                        "decision": decision.action,
+                    },
+                )
+            return await self._call_evaluated(
+                definition,
+                decision,
+                tool_name=tool_name,
+                memory_key=memory_key,
+                step_id=step_id,
+                arguments=kwargs,
+            )
+
+    async def _call_evaluated(
+        self,
+        definition: ToolDefinition,
+        decision: GovernanceDecision,
+        *,
+        tool_name: str,
+        memory_key: str | None,
+        step_id: str | None,
+        arguments: dict[str, Any],
+    ) -> Any:
         memory_slot = (tool_name, memory_key) if memory_key is not None else None
         if memory_slot is not None and memory_slot in self._request_memory:
             if decision.action == "deny":
@@ -272,7 +322,7 @@ class ToolGateway:
             approvals, binding = self._approval_binding(
                 step_id=step_id or tool_name,
                 decision=decision,
-                arguments=kwargs,
+                arguments=arguments,
             )
             if self.approval_token is None and self.trusted_consumed_approval is None:
                 approval = approvals.request(binding)
@@ -298,7 +348,8 @@ class ToolGateway:
         )
         started = perf_counter()
         try:
-            result = await definition.handler(**kwargs)
+            result = await definition.handler(**arguments)
+            duration_ms = round((perf_counter() - started) * 1_000, 2)
             self.policy.audit_log.append(
                 {
                     "phase": "execution",
@@ -308,13 +359,22 @@ class ToolGateway:
                     "outcome": "completed",
                     "effect": decision.effect,
                     "risk": decision.risk,
-                    "duration_ms": round((perf_counter() - started) * 1_000, 2),
+                    "duration_ms": duration_ms,
                 }
             )
+            if self.telemetry is not None:
+                metric_attributes = {"tool": tool_name, "outcome": "completed"}
+                self.telemetry.count("aurumlab.agent.tool.calls", attributes=metric_attributes)
+                self.telemetry.record(
+                    "aurumlab.agent.tool.duration",
+                    duration_ms,
+                    attributes=metric_attributes,
+                )
             if memory_slot is not None:
                 self._request_memory[memory_slot] = result
             return result
         except Exception as exc:
+            duration_ms = round((perf_counter() - started) * 1_000, 2)
             self.policy.audit_log.append(
                 {
                     "phase": "execution",
@@ -325,9 +385,17 @@ class ToolGateway:
                     "effect": decision.effect,
                     "risk": decision.risk,
                     "error_type": type(exc).__name__,
-                    "duration_ms": round((perf_counter() - started) * 1_000, 2),
+                    "duration_ms": duration_ms,
                 }
             )
+            if self.telemetry is not None:
+                metric_attributes = {"tool": tool_name, "outcome": "failed"}
+                self.telemetry.count("aurumlab.agent.tool.calls", attributes=metric_attributes)
+                self.telemetry.record(
+                    "aurumlab.agent.tool.duration",
+                    duration_ms,
+                    attributes=metric_attributes,
+                )
             raise
 
     def _approval_binding(

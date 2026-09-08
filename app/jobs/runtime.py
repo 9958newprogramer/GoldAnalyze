@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Protocol
 
+from opentelemetry.trace import SpanKind
+
 from app.agent.checkpoint import AgentExecutionCancelled, AgentStageTimeout
 from app.models import AgentCheckpoint, AgentJob, RunResponse
+from app.observability import Telemetry, TraceCarrier
 from app.storage import InvalidJobTransitionError, JobRepository
 
 from .broker import RedisStreamBroker, StreamMessage
@@ -40,6 +44,7 @@ class RetryableJobError(RuntimeError):
 class JobSubmissionService:
     jobs: JobRepository
     broker: RedisStreamBroker
+    telemetry: Telemetry | None = None
 
     async def submit(
         self,
@@ -49,18 +54,35 @@ class JobSubmissionService:
         *,
         idempotency_key: str | None,
     ) -> tuple[AgentJob, bool]:
-        job, created = self.jobs.create(
-            question,
-            cache_policy,
-            max_attempts,
-            idempotency_key=idempotency_key,
+        scope = (
+            self.telemetry.span("aurumlab.job.submit", kind=SpanKind.PRODUCER)
+            if self.telemetry is not None
+            else nullcontext()
         )
-        # Re-publish an existing queued Job as an outbox repair after a prior
-        # Redis outage. Duplicate messages are harmless because claim is CAS.
-        if job.status == "queued":
-            await self.broker.initialize()
-            await self.broker.enqueue(job.job_id)
-        return job, created
+        with scope as span:
+            carrier = self.telemetry.inject() if self.telemetry is not None else TraceCarrier()
+            job, created = self.jobs.create(
+                question,
+                cache_policy,
+                max_attempts,
+                idempotency_key=idempotency_key,
+                traceparent=carrier.traceparent,
+                tracestate=carrier.tracestate,
+            )
+            if span is not None:
+                span.set_attribute("aurumlab.job.id", job.job_id)
+                span.set_attribute("aurumlab.job.status", job.status)
+            # Re-publish an existing queued Job as an outbox repair after a prior
+            # Redis outage. Duplicate messages are harmless because claim is CAS.
+            if job.status == "queued":
+                await self.broker.initialize()
+                await self.broker.enqueue(job.job_id)
+            if self.telemetry is not None:
+                self.telemetry.count(
+                    "aurumlab.job.submissions",
+                    attributes={"created": created, "status": job.status},
+                )
+            return job, created
 
 
 class AgentWorker:
@@ -73,6 +95,7 @@ class AgentWorker:
         broker: RedisStreamBroker,
         lease_seconds: int = 30,
         stage_timeout_seconds: float = 30.0,
+        telemetry: Telemetry | None = None,
     ):
         self.worker_id = worker_id
         self.agent = agent
@@ -80,6 +103,7 @@ class AgentWorker:
         self.broker = broker
         self.lease_seconds = lease_seconds
         self.stage_timeout_seconds = stage_timeout_seconds
+        self.telemetry = telemetry or getattr(agent, "telemetry", None)
 
     async def run_once(self, *, block_ms: int = 1_000, reclaim_idle_ms: int = 30_000) -> bool:
         reclaimed = await self.broker.reclaim(
@@ -98,6 +122,26 @@ class AgentWorker:
         return True
 
     async def _process(self, message: StreamMessage) -> None:
+        traceparent, tracestate = self.jobs.get_trace_context(message.job_id)
+        parent = (
+            self.telemetry.extract(TraceCarrier(traceparent, tracestate))
+            if self.telemetry is not None
+            else None
+        )
+        scope = (
+            self.telemetry.span(
+                "aurumlab.job.process",
+                attributes={"aurumlab.job.id": message.job_id},
+                kind=SpanKind.CONSUMER,
+                context=parent,
+            )
+            if self.telemetry is not None
+            else nullcontext()
+        )
+        with scope as span:
+            await self._process_claimed(message, span)
+
+    async def _process_claimed(self, message: StreamMessage, span) -> None:
         job = self.jobs.claim(message.job_id, self.worker_id, self.lease_seconds)
         if job is None:
             current = self.jobs.get(message.job_id)
@@ -106,10 +150,23 @@ class AgentWorker:
                 "waiting_approval",
             }:
                 await self.broker.ack(message.message_id)
+            if self.telemetry is not None:
+                self.telemetry.count("aurumlab.job.attempts", attributes={"result": "not_claimed"})
             return
+        if span is not None:
+            span.set_attribute("aurumlab.job.attempt", job.attempts)
         checkpoint = self.jobs.get_checkpoint(job.job_id)
         if checkpoint is not None:
             self.jobs.append_checkpoint_restored(job.job_id, checkpoint.completed_steps)
+            if span is not None:
+                span.set_attribute(
+                    "aurumlab.checkpoint.restored_steps", len(checkpoint.completed_steps)
+                )
+            if self.telemetry is not None:
+                self.telemetry.count(
+                    "aurumlab.job.checkpoint.restores",
+                    attributes={"result": "restored"},
+                )
         try:
             response = await self.agent.run_checkpointed(
                 job.question,
@@ -174,6 +231,8 @@ class AgentWorker:
                     error_message=str(exc),
                 )
         except Exception as exc:  # noqa: BLE001 -- isolate one bad Job from the Worker loop
+            if span is not None:
+                self.telemetry.mark_error(span, type(exc).__name__)
             try:
                 self.jobs.transition_terminal(
                     job.job_id,
@@ -186,4 +245,10 @@ class AgentWorker:
                 # A concurrent cancellation/lease expiry already established
                 # the durable truth. Never overwrite it from a stale Worker.
                 pass
+        final = self.jobs.get(job.job_id)
+        outcome = final.status if final is not None else "missing"
+        if span is not None:
+            span.set_attribute("aurumlab.job.status", outcome)
+        if self.telemetry is not None:
+            self.telemetry.count("aurumlab.job.attempts", attributes={"result": outcome})
         await self.broker.ack(message.message_id)

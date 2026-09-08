@@ -34,6 +34,7 @@ async def serve() -> None:
         broker=services.job_broker,
         lease_seconds=services.settings.job_lease_seconds,
         stage_timeout_seconds=services.settings.job_stage_timeout_seconds,
+        telemetry=services.telemetry,
     )
     stopping = asyncio.Event()
     loop = asyncio.get_running_loop()
@@ -53,6 +54,7 @@ async def serve() -> None:
     finally:
         await services.mcp_clients.stop()
         await services.job_broker.close()
+        services.telemetry.shutdown()
 
 
 def main() -> None:

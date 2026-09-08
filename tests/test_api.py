@@ -1,3 +1,5 @@
+import re
+
 from fastapi.testclient import TestClient
 
 from app.main import app
@@ -18,10 +20,48 @@ def test_health_and_home_are_available():
     assert health.json()["router_llm_configured"] is False
     assert health.json()["async_job_transport"] == "redis-streams"
     assert health.json()["async_job_consumer_group"] == "aurumlab-workers-v1"
+    assert health.json()["otel_exporter"] == "memory"
+    assert health.json()["otel_service_name"] == "aurumlab"
+    assert re.fullmatch(r"[0-9a-f]{32}", health.headers["x-trace-id"])
     assert home.status_code == 200
     assert "AurumLab" in home.text
     assert "Async Job · Redis + SSE" in home.text
     assert home.headers["x-frame-options"] == "DENY"
+
+    upstream_trace_id = "1" * 32
+    propagated = client.get(
+        "/api/health",
+        headers={
+            "traceparent": f"00-{upstream_trace_id}-{'2' * 16}-01",
+            "baggage": "secret=must-not-propagate",
+        },
+    )
+    assert propagated.headers["x-trace-id"] == upstream_trace_id
+
+    observability = client.get("/api/observability")
+    assert observability.status_code == 200
+    snapshot = observability.json()
+    assert snapshot["privacy"] == "no-prompts-no-tool-arguments-no-tokens"
+    assert "must-not-propagate" not in str(snapshot)
+    assert any(span["name"] == "GET /api/health" for span in snapshot["recent_spans"])
+
+    attacker_path = "/random-high-cardinality-value-123456"
+    assert client.get(attacker_path).status_code == 404
+    bounded = client.get("/api/observability").json()
+    assert attacker_path not in str(bounded)
+    assert any(
+        item["attributes"].get("route") == "{unmatched}"
+        for item in bounded["metrics"]["counters"]
+        if item["name"] == "aurumlab.http.server.requests"
+    )
+
+    assert client.get("/static/app.js").status_code == 200
+    static_snapshot = client.get("/api/observability").json()
+    assert any(
+        item["attributes"].get("route") == "/static/{asset}"
+        for item in static_snapshot["metrics"]["counters"]
+        if item["name"] == "aurumlab.http.server.requests"
+    )
 
 
 def test_application_lifespan_discovers_mcp_client_tools():

@@ -108,6 +108,9 @@ select { border: 1px solid var(--line); background: #0d0f10; color: var(--text);
 .results { padding-top: 62px; }
 .hidden { display: none !important; }
 .job-panel { margin-top: 18px; padding: 22px; }
+.telemetry-panel { margin-top: 18px; padding: 22px; }
+.telemetry-summary { color: var(--muted); font-size: 12px; margin: 0 0 14px; }
+.telemetry-spans { max-height: 260px; overflow: auto; }
 .job-events { list-style: none; margin: 0; padding: 0; }
 .job-events li { display: grid; grid-template-columns: 54px 150px minmax(0, 1fr); gap: 12px; padding: 11px 0; border-top: 1px solid var(--line); font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
 .job-events li:first-child { border-top: 0; }

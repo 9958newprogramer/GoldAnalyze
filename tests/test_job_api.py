@@ -27,7 +27,7 @@ def configured_app(monkeypatch, tmp_path):
         services,
         jobs=jobs,
         job_broker=broker,
-        job_submission=JobSubmissionService(jobs, broker),
+        job_submission=JobSubmissionService(jobs, broker, services.telemetry),
     )
     monkeypatch.setattr(main_module, "services", services)
     return services
@@ -64,10 +64,12 @@ def test_async_job_api_is_idempotent_and_returns_immediately(monkeypatch, tmp_pa
 def test_worker_result_and_sse_support_last_event_id_reconnect(monkeypatch, tmp_path):
     services = configured_app(monkeypatch, tmp_path)
     with TestClient(main_module.app) as client:
-        created = client.post(
+        created_response = client.post(
             "/api/jobs",
             json={"question": "查询黄金最近5根日K线。", "cache_policy": "bypass"},
-        ).json()
+        )
+        created = created_response.json()
+        trace_id = created_response.headers["x-trace-id"]
         worker = AgentWorker(
             worker_id="api-test-worker",
             agent=services.agent,
@@ -83,6 +85,7 @@ def test_worker_result_and_sse_support_last_event_id_reconnect(monkeypatch, tmp_
             headers={"Last-Event-ID": "2"},
         )
         resumed_query = client.get(f"/api/jobs/{created['job_id']}/stream?after=4")
+        telemetry = client.get("/api/observability?span_limit=200").json()
 
     assert job.json()["status"] == "completed"
     assert "id: 1" in all_events.text
@@ -93,6 +96,16 @@ def test_worker_result_and_sse_support_last_event_id_reconnect(monkeypatch, tmp_
     assert "id: 4\n" not in resumed_query.text
     assert "id: 5\n" in resumed_query.text
     assert all_events.headers["cache-control"] == "no-cache, no-transform"
+    trace_names = {
+        span["name"] for span in telemetry["recent_spans"] if span["trace_id"] == trace_id
+    }
+    assert {
+        "POST /api/jobs",
+        "aurumlab.job.submit",
+        "aurumlab.job.process",
+        "aurumlab.agent.run",
+        "aurumlab.store.checkpoint.save",
+    } <= trace_names
 
 
 def test_cancel_endpoint_is_idempotent_for_queued_job(monkeypatch, tmp_path):

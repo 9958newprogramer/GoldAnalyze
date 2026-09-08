@@ -6,12 +6,14 @@ import asyncio
 import json
 from contextlib import asynccontextmanager
 from pathlib import Path
+from time import perf_counter
 from typing import Annotated
 
 import uvicorn
 from fastapi import FastAPI, Header, HTTPException, Query, Request, Response, status
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from opentelemetry.trace import SpanKind
 from redis.exceptions import RedisError
 
 from app import __version__
@@ -54,6 +56,7 @@ async def lifespan(_: FastAPI):
     finally:
         await services.mcp_clients.stop()
         await services.job_broker.close()
+        services.telemetry.shutdown()
 
 
 app = FastAPI(
@@ -66,6 +69,53 @@ app = FastAPI(
     lifespan=lifespan,
 )
 app.mount("/static", StaticFiles(directory=static_root), name="static")
+
+
+@app.middleware("http")
+async def observe_http(request: Request, call_next):
+    method = request.method.upper()
+    parent = services.telemetry.extract(request.headers)
+    started = perf_counter()
+    response: Response | None = None
+    with services.telemetry.span(
+        f"{method} request",
+        attributes={"http.request.method": method},
+        kind=SpanKind.SERVER,
+        context=parent,
+    ) as span:
+        try:
+            response = await call_next(request)
+        except Exception as exc:
+            services.telemetry.mark_error(span, type(exc).__name__)
+            raise
+        finally:
+            status_code = response.status_code if response is not None else 500
+            status_class = f"{status_code // 100}xx"
+            route_object = request.scope.get("route")
+            route = getattr(route_object, "path", "{unmatched}")
+            if route == "{unmatched}" and request.url.path.startswith("/static/"):
+                route = "/static/{asset}"
+            if not isinstance(route, str) or len(route) > 160:
+                route = "{unmatched}"
+            span.update_name(f"{method} {route}")
+            span.set_attribute("http.route", route)
+            span.set_attribute("http.response.status_code", status_code)
+            duration_ms = round((perf_counter() - started) * 1_000, 2)
+            metric_attributes = {
+                "method": method,
+                "route": route,
+                "status_class": status_class,
+            }
+            services.telemetry.count("aurumlab.http.server.requests", attributes=metric_attributes)
+            services.telemetry.record(
+                "aurumlab.http.server.duration", duration_ms, attributes=metric_attributes
+            )
+        if response is not None:
+            trace_id = services.telemetry.current_trace_id()
+            if trace_id is not None:
+                response.headers["X-Trace-Id"] = trace_id
+            return response
+    raise RuntimeError("HTTP middleware completed without a response")
 
 
 @app.middleware("http")
@@ -112,7 +162,17 @@ async def health() -> dict[str, object]:
         "async_job_transport": "redis-streams",
         "async_job_stream": services.settings.job_stream_name,
         "async_job_consumer_group": services.settings.job_consumer_group,
+        "otel_exporter": services.telemetry.exporter_name,
+        "otel_service_name": services.telemetry.service_name,
     }
+
+
+@app.get("/api/observability")
+async def observability_snapshot(
+    span_limit: int = Query(default=100, ge=1, le=200),
+) -> dict[str, object]:
+    """Return bounded, redacted local evidence; OTLP remains the production export path."""
+    return services.telemetry.snapshot(span_limit=span_limit)
 
 
 @app.get("/api/skills", response_model=list[SkillDescriptor])

@@ -43,6 +43,11 @@ def _bounded_int_from_env(name: str, default: int, minimum: int, maximum: int) -
     return value if minimum <= value <= maximum else default
 
 
+def _choice_from_env(name: str, default: str, choices: set[str]) -> str:
+    value = os.getenv(name, default).strip().lower()
+    return value if value in choices else default
+
+
 @dataclass(frozen=True)
 class Settings:
     app_name: str = "AurumLab"
@@ -97,6 +102,16 @@ class Settings:
         "SSE_POLL_INTERVAL_SECONDS", 0.25, 0.01, 5.0
     )
     sse_heartbeat_seconds: float = _bounded_float_from_env("SSE_HEARTBEAT_SECONDS", 10.0, 0.1, 60.0)
+    otel_service_name: str = os.getenv("OTEL_SERVICE_NAME", "aurumlab")[:64]
+    otel_exporter: str = _choice_from_env(
+        "OTEL_EXPORTER", "memory", {"none", "memory", "console", "otlp"}
+    )
+    otel_otlp_endpoint: str = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:4318")
+    otel_sample_ratio: float = _bounded_float_from_env("OTEL_SAMPLE_RATIO", 1.0, 0.0, 1.0)
+    otel_memory_max_spans: int = _bounded_int_from_env("OTEL_MEMORY_MAX_SPANS", 500, 50, 5_000)
+    otel_metric_export_interval_seconds: float = _bounded_float_from_env(
+        "OTEL_METRIC_EXPORT_INTERVAL_SECONDS", 30.0, 1.0, 300.0
+    )
     cache_semantic_threshold: float = _bounded_float_from_env(
         "CACHE_SEMANTIC_THRESHOLD", 0.82, 0.5, 1.0
     )

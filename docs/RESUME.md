@@ -48,6 +48,14 @@
 
 可量化表述必须引用最新验证记录。当前 v0.8 定向与全量测试覆盖重复提交、双 Worker 竞争、Worker 崩溃、active lease reclaim、取消竞态、超时、有限重试/死信、Checkpoint 恢复、SSE 重连与异步审批；最终数字以 `docs/PROGRESS.md` 为准。
 
+## v0.9 新增的可写要点
+
+- 使用 OpenTelemetry API/SDK 对 HTTP、Agent Run、Router、Planner、Plan step、Tool Governance/Execution、Artifact/Run Store、Redis Job producer/consumer 与 Checkpoint 进行手工插桩，形成可检查的端到端 Trace。
+- 通过 W3C Trace Context 贯通异步边界：`traceparent/tracestate` 只保存在 SQLite 控制面，Redis Stream 仍仅投递 opaque Job ID；Worker 提取上下文后以 Consumer Span 恢复原 Trace，重试和断点续跑保持因果关系。
+- 建立请求量/延迟、Agent 状态、Plan step、Tool 决策与调用、Job attempt、Checkpoint restore 等 Counter/Histogram；使用路由模板和服务端枚举约束 Metric label，避免用户输入、随机 ID 与自由文本造成高基数。
+- 提供有界内存、Console 和 OTLP 三类可配置导出，配套固定版本 OpenTelemetry Collector、Jaeger 与 Prometheus scrape endpoint；Web/API 可直接展示脱敏 Span 和本地指标证据。
+- 制定 Observability Privacy Contract：Trace/Metrics 不记录 Prompt、Tool 参数/结果、URL、SQL、异常消息、API Key、审批 token 或 baggage，并以自动测试验证跨进程父子关系、Redis 数据最小化、Span buffer 上限和敏感 sentinel 不泄露。
+
 ## 面试时主动强调
 
 - 黄金仅用作有确定性输入输出的工具场景，工程重点是 Agent 的路由、能力边界、协议暴露、治理、可观测与评测。
@@ -56,4 +64,4 @@
 
 ## 下一版本增量表述（尚不可作为已完成能力）
 
-v0.9 将增加 OpenTelemetry Trace 与运行指标；v1.0 才会完成 100+ Golden Set、CI、完整 Docker、非金融 Skill 和演示证据包。在对应版本验证前不能写成已完成。
+v1.0 才会完成 100+ Golden Set、CI、完整 Docker、非金融 Skill 和演示证据包。在对应版本验证前不能写成已完成。

@@ -16,6 +16,7 @@ let pendingApproval = null;
 let activeJobId = null;
 let activeEventSource = null;
 let lastJobEventId = 0;
+let activeTraceId = null;
 
 const backtestMetricDefinitions = [
   ["total_return_pct", "Total return", "%"],
@@ -72,8 +73,46 @@ async function loadRuntime() {
       "#async-runtime",
       `${health.async_job_transport} · ${health.async_job_consumer_group}`,
     );
+    setText("#otel-runtime", `${health.otel_exporter} · ${health.otel_service_name}`);
   } catch {
     setText("#health-label", "API unavailable");
+  }
+}
+
+async function loadObservability(traceId = null) {
+  try {
+    const snapshot = await readResponse(
+      await fetch("/api/observability?span_limit=100"),
+      "读取 OpenTelemetry 证据失败",
+    );
+    const matching = traceId
+      ? snapshot.recent_spans.filter((span) => span.trace_id === traceId)
+      : snapshot.recent_spans.slice(-12);
+    const visible = matching.slice(-12);
+    const list = document.querySelector("#otel-spans");
+    list.replaceChildren();
+    visible.forEach((span) => {
+      const item = document.createElement("li");
+      const id = document.createElement("span");
+      id.className = "job-event-id";
+      id.textContent = span.span_id.slice(0, 8);
+      const name = document.createElement("span");
+      name.className = "job-event-type";
+      name.textContent = span.name;
+      const duration = document.createElement("span");
+      duration.className = "job-event-message";
+      duration.textContent = `${span.duration_ms} ms · ${span.status}`;
+      item.append(id, name, duration);
+      list.append(item);
+    });
+    setText("#otel-span-count", `${matching.length} SPANS`);
+    const counterTotal = snapshot.metrics.counters.reduce((sum, item) => sum + item.value, 0);
+    setText(
+      "#otel-summary",
+      `${snapshot.exporter} exporter · trace ${traceId ? traceId.slice(0, 12) : "最近进程"} · ${counterTotal} counter events · ${snapshot.privacy}`,
+    );
+  } catch (error) {
+    setText("#otel-summary", `OpenTelemetry 暂不可读：${error.message}`);
   }
 }
 
@@ -507,6 +546,9 @@ async function loadJobResult(jobId) {
     const run = await readResponse(await fetch(`/api/runs/${job.run_id}`), "读取 Run 失败");
     renderResult(run, job.status === "waiting_approval" ? jobId : null);
   }
+  if (["completed", "failed", "cancelled", "timed_out", "dead_letter"].includes(job.status)) {
+    await loadObservability(activeTraceId);
+  }
   return job;
 }
 
@@ -590,8 +632,7 @@ form.addEventListener("submit", async (event) => {
   try {
     if (executionMode.value === "async") {
       const idempotencyKey = globalThis.crypto?.randomUUID?.() || `web-${Date.now()}`;
-      const job = await readResponse(
-        await fetch("/api/jobs", {
+      const jobResponse = await fetch("/api/jobs", {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -601,9 +642,9 @@ form.addEventListener("submit", async (event) => {
             question: question.value,
             cache_policy: cachePolicy.value,
           }),
-        }),
-        "异步 Job 创建失败",
-      );
+        });
+      activeTraceId = jobResponse.headers.get("X-Trace-Id");
+      const job = await readResponse(jobResponse, "异步 Job 创建失败");
       window.clearInterval(timer);
       timer = null;
       liveMessage.textContent = `Job ${job.job_id} 已排队，等待 Worker…`;
@@ -615,12 +656,14 @@ form.addEventListener("submit", async (event) => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ question: question.value, cache_policy: cachePolicy.value }),
     });
+    activeTraceId = response.headers.get("X-Trace-Id");
     const payload = await response.json();
     if (!response.ok) {
       const detail = typeof payload.detail === "string" ? payload.detail : "请求未通过校验";
       throw new Error(detail);
     }
     renderResult(payload);
+    await loadObservability(activeTraceId);
     liveMessage.textContent = payload.status === "completed"
       ? payload.cache_status === "exact_hit"
         ? "命中 Artifact Memory，已跳过领域 Tool 链"
@@ -656,3 +699,4 @@ evalButton.addEventListener("click", async () => {
 
 loadRuntime();
 loadLatestEval();
+loadObservability();

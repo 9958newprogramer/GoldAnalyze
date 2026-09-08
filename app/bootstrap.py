@@ -17,6 +17,7 @@ from app.jobs import JobSubmissionService, RedisStreamBroker
 from app.mcp_client import MCPClientManager, MCPServerBinding, MCPServerSpec
 from app.mcp_provider import mcp_tool_provider
 from app.memory import ArtifactCache
+from app.observability import Telemetry
 from app.skills.registry import SkillRegistry
 from app.storage import EvalReportRepository, JobRepository, RunRepository
 from app.tools.search import build_search_provider
@@ -36,9 +37,21 @@ class Services:
     agent: AurumAgent
     evaluator: EvalRunner
     mcp_clients: MCPClientManager
+    telemetry: Telemetry
 
 
 def build_services(app_settings: Settings = settings) -> Services:
+    from app import __version__
+
+    telemetry = Telemetry(
+        service_name=app_settings.otel_service_name,
+        service_version=__version__,
+        exporter=app_settings.otel_exporter,
+        otlp_endpoint=app_settings.otel_otlp_endpoint,
+        sample_ratio=app_settings.otel_sample_ratio,
+        memory_max_spans=app_settings.otel_memory_max_spans,
+        metric_export_interval_seconds=app_settings.otel_metric_export_interval_seconds,
+    )
     skills = SkillRegistry(app_settings.project_root / "skills")
     runs = RunRepository(app_settings.resolved_app_database_path)
     eval_reports = EvalReportRepository(app_settings.resolved_app_database_path)
@@ -65,7 +78,7 @@ def build_services(app_settings: Settings = settings) -> Services:
         stream_name=app_settings.job_stream_name,
         group_name=app_settings.job_consumer_group,
     )
-    job_submission = JobSubmissionService(jobs, job_broker)
+    job_submission = JobSubmissionService(jobs, job_broker, telemetry)
     agent = AurumAgent(
         interpreter=build_interpreter(app_settings),
         market_repository=build_market_repository(app_settings),
@@ -77,6 +90,7 @@ def build_services(app_settings: Settings = settings) -> Services:
         router=build_intent_router(app_settings),
         market_cache_ttl_seconds=app_settings.market_cache_ttl_seconds,
         research_cache_ttl_seconds=app_settings.research_cache_ttl_seconds,
+        telemetry=telemetry,
     )
     evaluator = EvalRunner(agent=agent, dataset_path=app_settings.resolved_eval_dataset_path)
     mcp_clients = MCPClientManager(
@@ -104,4 +118,5 @@ def build_services(app_settings: Settings = settings) -> Services:
         agent=agent,
         evaluator=evaluator,
         mcp_clients=mcp_clients,
+        telemetry=telemetry,
     )

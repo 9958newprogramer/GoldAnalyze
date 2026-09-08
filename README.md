@@ -4,7 +4,7 @@ AurumLab 是一个**面向 Agent 开发求职**的可运行作品集项目。黄
 
 > 只做研究与历史实验，不连接实盘，不执行用户提供的 Python、SQL 或 Shell，不构成投资建议。
 
-## v0.8 已实现的闭环
+## v0.9 已实现的闭环
 
 ```mermaid
 flowchart LR
@@ -39,6 +39,11 @@ flowchart LR
     W --> P
     W --> CP[逐 Plan Step Checkpoint]
     CP --> SSE[SSE + Last-Event-ID]
+    A --> OT[OpenTelemetry HTTP Span]
+    OT --> AR[Agent / Plan / Tool / Store Spans]
+    U --> JC[W3C Trace Context]
+    JC --> W
+    AR --> EX[Memory / Console / OTLP Export]
 ```
 
 | 意图 | Skill | 主要产物 | Tool 预算 |
@@ -150,6 +155,32 @@ curl -X DELETE http://127.0.0.1:8010/api/jobs/JOB_ID
 ```
 
 同一幂等键与相同请求返回原 Job；同键改变请求返回 409。幂等键只以 SHA-256 保存。Redis 暂时不可用时 Job 仍在 SQLite，使用相同幂等键重试会修复投递。异步审批先沿用 HTTP 人工审批，再通过 `/api/jobs/{job_id}/resume` 原子消费 token 并重新入队；原始 token 不进入 Redis、Job、Checkpoint、Run 或 Audit。完整状态机与威胁模型见 [`docs/ASYNC_RUNTIME.md`](docs/ASYNC_RUNTIME.md)。
+
+## OpenTelemetry Trace 与运行指标
+
+v0.9 用 OpenTelemetry API/SDK 手工串联 HTTP、Agent Run、Router、Planner、Plan step、Tool
+治理/执行、Artifact/Run Store、Job producer/consumer 和 Checkpoint。HTTP 响应返回
+`X-Trace-Id`；异步提交把 W3C `traceparent` 存在 SQLite 控制面，Redis 消息仍只有 opaque
+`job_id`，Worker 因而能在不扩大队列数据面的前提下恢复父 Trace。
+
+默认 `memory` exporter 提供有界本地反馈：页面会显示当前 Trace 的 Span，
+`GET /api/observability` 返回最近最多 200 个脱敏 Span 和低基数指标聚合。观测数据不记录
+Prompt、Tool 参数/结果、URL、SQL、异常消息、API Key 或审批凭证；HTTP 指标使用 FastAPI
+路由模板，未知路径统一聚合为 `{unmatched}`。
+
+需要跨 API/Worker 进程查询时，启动固定版本的 Collector 与 Jaeger：
+
+```bash
+make observability-up
+OTEL_EXPORTER=otlp make run
+# 新终端
+OTEL_EXPORTER=otlp make worker
+```
+
+Jaeger UI 位于 [http://127.0.0.1:16686](http://127.0.0.1:16686)，Collector 暴露的
+Prometheus scrape endpoint 位于 [http://127.0.0.1:9464/metrics](http://127.0.0.1:9464/metrics)。
+`OTEL_EXPORTER` 还支持 `memory`、`console` 和 `none`。Span 拓扑、指标名、隐私与高基数边界见
+[`docs/OBSERVABILITY.md`](docs/OBSERVABILITY.md)。
 
 ## Artifact Memory
 
@@ -279,7 +310,7 @@ LLM_MODEL=gpt-5-mini
 make verify
 ```
 
-测试覆盖路由、任务编译、策略解释、回测语义、行情查询、Search Provider 替身、危险请求预检、持久化、Eval、HTTP API、安全响应头，以及 MCP 进程内/stdio discovery、Schema 漂移、命名空间、参数校验、超时、Prompt Injection 和治理审计。
+测试覆盖路由、任务编译、策略解释、回测语义、行情查询、Search Provider 替身、危险请求预检、持久化、Eval、HTTP API、安全响应头，以及 MCP 进程内/stdio discovery、Schema 漂移、命名空间、参数校验、超时、Prompt Injection 和治理审计；v0.9 还验证同步/异步 Trace 父子关系、W3C 跨 Worker 传播、OTLP protobuf Trace/Metrics 真实发送、Redis payload 最小化、高基数路径收敛及观测内容脱敏。
 
 ## 项目结构与后续版本
 
@@ -291,6 +322,7 @@ app/
   evals/          # Golden Set、Rubric、Runner、CLI
   approval.py     # HITL 状态机、参数绑定与一次性凭证
   memory.py       # 任务指纹、相似度、SQLite Artifact Cache
+  observability.py # OpenTelemetry SDK、W3C propagation、有界证据与指标
   mcp_client.py   # MCP 会话、动态 Catalog、Schema Pin、治理适配
   mcp_provider.py # 独立非金融 MCP Tool Provider
   skills/         # Skill Registry runtime
@@ -304,6 +336,6 @@ tests/
 docs/
 ```
 
-v0.8 已实现 Redis Streams Worker、SSE、幂等、取消、超时、有限重试、dead-letter、异步审批与逐 Plan step 持久化 Checkpoint。详见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)、[`docs/ASYNC_RUNTIME.md`](docs/ASYNC_RUNTIME.md)、[`docs/APPROVALS.md`](docs/APPROVALS.md)、[`docs/MCP_CLIENT.md`](docs/MCP_CLIENT.md)、[`docs/ARTIFACT_MEMORY.md`](docs/ARTIFACT_MEMORY.md) 与 [`docs/RESUME.md`](docs/RESUME.md)。
+v0.9 已实现 OpenTelemetry Trace/Metrics 与 W3C 异步上下文传播；v0.8 的 Redis Streams Worker、SSE、恢复语义和 HITL 继续作为执行底座。详见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)、[`docs/OBSERVABILITY.md`](docs/OBSERVABILITY.md)、[`docs/ASYNC_RUNTIME.md`](docs/ASYNC_RUNTIME.md)、[`docs/APPROVALS.md`](docs/APPROVALS.md)、[`docs/MCP_CLIENT.md`](docs/MCP_CLIENT.md)、[`docs/ARTIFACT_MEMORY.md`](docs/ARTIFACT_MEMORY.md) 与 [`docs/RESUME.md`](docs/RESUME.md)。
 
 持续迭代的当前状态、验收证据、下一步和掉线恢复方式，以 [`docs/PROGRESS.md`](docs/PROGRESS.md) 为唯一进度真相源。

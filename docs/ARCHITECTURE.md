@@ -8,7 +8,7 @@ AurumLab 的主语是 Agent 工程，不是黄金策略：
 
 这与 AgentForge 形成互补：AgentForge 重点展示 Agentic RAG 和知识库工作流；AurumLab 重点展示意图路由、Skill/MCP、工具治理、确定性任务执行、降级策略和自动评测。
 
-## v0.8 运行架构
+## v0.9 运行架构
 
 ```text
 Web / HTTP / MCP ── sync ───────────────────────────────┐
@@ -47,6 +47,12 @@ Web / HTTP / MCP ── sync ─────────────────
                 └── direct-response tool
                           ↓
               RunResponse → SQLite RunRepository + ArtifactCache
+
+OpenTelemetry
+    ├── HTTP Server → Agent → Route → Plan → Step → Tool → Store
+    ├── Job Producer ┄ W3C traceparent in SQLite ┄ Job Consumer → Checkpoint
+    ├── bounded local evidence API / Web panel
+    └── OTLP → Collector → Jaeger Trace / Prometheus scrape metrics
 ```
 
 所有入口共享同一个 Orchestrator。MCP、Web 和 API 不复制领域逻辑，便于验证不同协议下的行为一致性。
@@ -99,6 +105,14 @@ AgentForge 已展示 LangGraph。当前显式 Orchestrator 更能突出路由、
 
 只有规范化任务规格和数据版本完全一致时才自动复用。结构化相似度超过阈值只产生 `semantic_candidate`，新策略仍调用领域 Tool；这避免了用 10/30 均线的结果回答 11/31 均线。回测依赖行情版本，行情和外部检索还受 TTL 约束。详见 [`ARTIFACT_MEMORY.md`](ARTIFACT_MEMORY.md)。
 
+### 11. 可观测上下文不扩大数据暴露面
+
+同步入口以 HTTP Server Span 为根，异步入口以 Job Producer/Consumer 连接 API 与 Worker；W3C
+Trace Context 保存在 SQLite，而不是放入 Redis Stream。Span 只采集 Run/Job/Plan ID、版本化
+Skill、注册 Tool、治理枚举、状态与耗时；Metric label 只用路由模板和服务端枚举。Prompt、参数、
+结果、URL、SQL、异常消息、Secret、审批 token 和 baggage 均禁止进入观测数据。默认本地 buffer
+有硬上限，OTLP 可导出到 Collector。详见 [`OBSERVABILITY.md`](OBSERVABILITY.md)。
+
 ## 评测架构
 
 ```text
@@ -120,7 +134,7 @@ EvalReportRepository → CLI exit code / API / Web panel
 
 ## 威胁模型
 
-| 边界 | 风险 | v0.8 控制 |
+| 边界 | 风险 | v0.9 控制 |
 |---|---|---|
 | HTTP/MCP 输入 | 超长输入、Prompt Injection、破坏指令 | 长度校验；Tool 前威胁预检；fail closed |
 | 路由、Plan 与 Skill | 误路由、乱序或越权计划 | Pydantic 枚举；服务端 Skill 映射；Plan Validator/Runtime；Per-Skill Allowlist 与预算 |
@@ -132,6 +146,7 @@ EvalReportRepository → CLI exit code / API / Web panel
 | Checkpoint / SSE | 任意反序列化、步骤重放、跨 Job 越界读取 | 版本化显式 JSON codec；问题/Plan/前缀校验；每 Job 单调 cursor；路径绑定查询 |
 | 行情 SQLite | SQL 注入、意外写入 | `mode=ro`；参数化值；标识符校验 |
 | 持久化 | Secret 泄露、缓存污染、陈旧结果 | 参数化 SQL；最小化 Artifact Snapshot；数据版本 + TTL；Run ID 校验 |
+| OpenTelemetry | Prompt/Token 泄露、高基数标签、伪造上下文 | 字段白名单；无 baggage；路由模板；有界 buffer；Metric 维度长度限制；OTLP operator config |
 | Eval API | 计算资源滥用 | 固定本地数据集；最多 50 案例 |
 
 当前是本地单用户作品集，不宣称具备多租户生产安全。公网部署前需要身份认证、租户隔离、速率限制、CSRF 策略和 MCP OAuth/Scope。
@@ -198,8 +213,10 @@ EvalReportRepository → CLI exit code / API / Web panel
 
 ### v0.9（可观测）
 
-- OpenTelemetry 串联 HTTP → Agent → Tool → Store。
-- 延迟、失败率、缓存命中率和 Tool 调用量仪表盘。
+- OpenTelemetry 串联 HTTP → Agent → Plan → Tool → Store 与异步 Job producer/consumer。
+- W3C Trace Context 跨 Worker 传播；Redis payload 仍只含 Job ID。
+- 请求/Run/Plan/Tool/Job/Checkpoint Counter 与 Histogram，低基数和隐私边界。
+- 有界本地 evidence、OTLP Collector、Jaeger Trace 和 Prometheus scrape endpoint。
 
 ### v1.0-resume（招聘展示增强）
 

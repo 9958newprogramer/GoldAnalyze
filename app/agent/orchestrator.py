@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import hmac
 from collections.abc import Awaitable, Callable
+from contextlib import nullcontext
 from datetime import UTC, datetime
 from time import perf_counter
 from typing import Any, Literal
 from uuid import uuid4
+
+from opentelemetry.trace import SpanKind
 
 from app.agent.checkpoint import (
     AgentExecutionCancelled,
@@ -48,6 +51,7 @@ from app.models import (
     RunResponse,
     StrategySpec,
 )
+from app.observability import Telemetry
 from app.skills.registry import SkillRegistry
 from app.storage import RunRepository
 from app.tools.registry import ToolGateway, ToolMetadata, ToolPolicy, ToolRegistry
@@ -79,6 +83,7 @@ class AurumAgent:
         planner: BoundedPlanner | None = None,
         market_cache_ttl_seconds: int = 300,
         research_cache_ttl_seconds: int = 900,
+        telemetry: Telemetry | None = None,
     ):
         self.interpreter = interpreter
         self.market_repository = market_repository
@@ -91,6 +96,7 @@ class AurumAgent:
         self.planner = planner or BoundedPlanner()
         self.market_cache_ttl_seconds = market_cache_ttl_seconds
         self.research_cache_ttl_seconds = research_cache_ttl_seconds
+        self.telemetry = telemetry
         self.tools = ToolRegistry()
         read_low = ToolMetadata(effect="read", risk="low")
         self.tools.register("inspect_market_data", self._inspect_market_data, read_low)
@@ -219,8 +225,8 @@ class AurumAgent:
             "这个问题未触发领域工具；你可以直接描述目标、周期和参数。"
         )
 
-    @staticmethod
     async def _timed_event(
+        self,
         events: list[AgentEvent],
         runtime: PlanRuntime,
         stage: str,
@@ -232,33 +238,80 @@ class AurumAgent:
         if session is not None:
             restored, output = session.restore(stage)
             if restored:
+                if self.telemetry is not None:
+                    with self.telemetry.span(
+                        "aurumlab.plan.step",
+                        attributes={
+                            "aurumlab.plan.step": stage,
+                            "aurumlab.job.status": "restored",
+                        },
+                    ):
+                        self.telemetry.count(
+                            "aurumlab.agent.plan.steps",
+                            attributes={"step": stage, "result": "restored"},
+                        )
                 return output
         runtime.begin(stage, tool_name)
         started = perf_counter()
-        try:
-            output = await session.bounded(stage, action) if session is not None else await action()
-            runtime.complete(stage)
-            events.append(
-                AgentEvent(
-                    sequence=len(events) + 1,
-                    stage=stage,
-                    status="completed",
-                    message=message,
-                    duration_ms=round((perf_counter() - started) * 1_000, 2),
-                )
+        scope = (
+            self.telemetry.span(
+                "aurumlab.plan.step",
+                attributes={
+                    "aurumlab.plan.step": stage,
+                    **({"aurumlab.tool.name": tool_name} if tool_name else {}),
+                },
             )
+            if self.telemetry is not None
+            else nullcontext()
+        )
+        try:
+            with scope:
+                output = (
+                    await session.bounded(stage, action) if session is not None else await action()
+                )
+                runtime.complete(stage)
+                duration_ms = round((perf_counter() - started) * 1_000, 2)
+                events.append(
+                    AgentEvent(
+                        sequence=len(events) + 1,
+                        stage=stage,
+                        status="completed",
+                        message=message,
+                        duration_ms=duration_ms,
+                    )
+                )
+                if self.telemetry is not None:
+                    self.telemetry.count(
+                        "aurumlab.agent.plan.steps",
+                        attributes={"step": stage, "result": "completed"},
+                    )
+                    self.telemetry.record(
+                        "aurumlab.agent.plan.step.duration",
+                        duration_ms,
+                        attributes={"step": stage, "result": "completed"},
+                    )
             if session is not None:
-                session.persist(stage, output, runtime, events)
+                checkpoint_scope = (
+                    self.telemetry.span(
+                        "aurumlab.store.checkpoint.save",
+                        attributes={"aurumlab.plan.step": stage},
+                    )
+                    if self.telemetry is not None
+                    else nullcontext()
+                )
+                with checkpoint_scope:
+                    session.persist(stage, output, runtime, events)
             return output
         except ApprovalRequired as exc:
             runtime.pause(stage)
+            duration_ms = round((perf_counter() - started) * 1_000, 2)
             events.append(
                 AgentEvent(
                     sequence=len(events) + 1,
                     stage="approval_required",
                     status="waiting_approval",
                     message=f"Tool {tool_name or stage} 等待人工审批，尚未执行",
-                    duration_ms=round((perf_counter() - started) * 1_000, 2),
+                    duration_ms=duration_ms,
                     details={
                         "approval_id": exc.approval.approval_id,
                         "tool": exc.approval.tool_name,
@@ -268,6 +321,11 @@ class AurumAgent:
                     },
                 )
             )
+            if self.telemetry is not None:
+                self.telemetry.count(
+                    "aurumlab.agent.plan.steps",
+                    attributes={"step": stage, "result": "waiting_approval"},
+                )
             raise
         except Exception as exc:
             runtime.fail(stage)
@@ -281,10 +339,15 @@ class AurumAgent:
                     details={"error_type": type(exc).__name__},
                 )
             )
+            if self.telemetry is not None:
+                self.telemetry.count(
+                    "aurumlab.agent.plan.steps",
+                    attributes={"step": stage, "result": "failed"},
+                )
             raise
 
-    @staticmethod
     def _timed_sync_event(
+        self,
         events: list[AgentEvent],
         runtime: PlanRuntime,
         stage: str,
@@ -295,24 +358,65 @@ class AurumAgent:
         if session is not None:
             restored, output = session.restore(stage)
             if restored:
+                if self.telemetry is not None:
+                    with self.telemetry.span(
+                        "aurumlab.plan.step",
+                        attributes={
+                            "aurumlab.plan.step": stage,
+                            "aurumlab.job.status": "restored",
+                        },
+                    ):
+                        self.telemetry.count(
+                            "aurumlab.agent.plan.steps",
+                            attributes={"step": stage, "result": "restored"},
+                        )
                 return output
             session.before_step()
         runtime.begin(stage)
         started = perf_counter()
-        try:
-            output = action()
-            runtime.complete(stage)
-            events.append(
-                AgentEvent(
-                    sequence=len(events) + 1,
-                    stage=stage,
-                    status="completed",
-                    message=message,
-                    duration_ms=round((perf_counter() - started) * 1_000, 2),
-                )
+        scope = (
+            self.telemetry.span(
+                "aurumlab.plan.step",
+                attributes={"aurumlab.plan.step": stage},
             )
+            if self.telemetry is not None
+            else nullcontext()
+        )
+        try:
+            with scope:
+                output = action()
+                runtime.complete(stage)
+                duration_ms = round((perf_counter() - started) * 1_000, 2)
+                events.append(
+                    AgentEvent(
+                        sequence=len(events) + 1,
+                        stage=stage,
+                        status="completed",
+                        message=message,
+                        duration_ms=duration_ms,
+                    )
+                )
+                if self.telemetry is not None:
+                    self.telemetry.count(
+                        "aurumlab.agent.plan.steps",
+                        attributes={"step": stage, "result": "completed"},
+                    )
+                    self.telemetry.record(
+                        "aurumlab.agent.plan.step.duration",
+                        duration_ms,
+                        attributes={"step": stage, "result": "completed"},
+                    )
             if session is not None:
-                session.persist(stage, output, runtime, events)
+                checkpoint_scope = (
+                    self.telemetry.span(
+                        "aurumlab.store.checkpoint.save",
+                        attributes={"aurumlab.plan.step": stage},
+                    )
+                    if self.telemetry is not None
+                    else nullcontext()
+                )
+                with checkpoint_scope:
+                    session.persist(stage, output, runtime, events)
             return output
         except Exception as exc:
             runtime.fail(stage)
@@ -326,6 +430,11 @@ class AurumAgent:
                     details={"error_type": type(exc).__name__},
                 )
             )
+            if self.telemetry is not None:
+                self.telemetry.count(
+                    "aurumlab.agent.plan.steps",
+                    attributes={"step": stage, "result": "failed"},
+                )
             raise
 
     def _lookup_cache(
@@ -364,7 +473,13 @@ class AurumAgent:
                 )
             else:
                 try:
-                    lookup = self.artifacts.lookup(task)
+                    lookup_scope = (
+                        self.telemetry.span("aurumlab.store.artifact.lookup")
+                        if self.telemetry is not None
+                        else nullcontext()
+                    )
+                    with lookup_scope:
+                        lookup = self.artifacts.lookup(task)
                 except Exception as exc:  # noqa: BLE001 -- cache cannot break primary execution
                     lookup = CacheLookup(
                         CacheInfo(
@@ -381,19 +496,41 @@ class AurumAgent:
                 "refresh": "调用方要求刷新，将执行完整 Tool 链并更新 Artifact",
                 "bypass": "本次请求绕过 Artifact Cache",
             }
+            duration_ms = round((perf_counter() - started) * 1_000, 2)
             events.append(
                 AgentEvent(
                     sequence=len(events) + 1,
                     stage="cache_lookup",
                     status="completed",
                     message=messages[lookup.info.status],
-                    duration_ms=round((perf_counter() - started) * 1_000, 2),
+                    duration_ms=duration_ms,
                     details=lookup.info.model_dump(mode="json", exclude_none=True),
                 )
             )
             runtime.complete("cache_lookup")
+            if self.telemetry is not None:
+                metric_attributes = {
+                    "step": "cache_lookup",
+                    "result": "completed",
+                    "cache_status": lookup.info.status,
+                }
+                self.telemetry.count("aurumlab.agent.plan.steps", attributes=metric_attributes)
+                self.telemetry.record(
+                    "aurumlab.agent.plan.step.duration",
+                    duration_ms,
+                    attributes=metric_attributes,
+                )
             if session is not None:
-                session.persist("cache_lookup", lookup, runtime, events)
+                checkpoint_scope = (
+                    self.telemetry.span(
+                        "aurumlab.store.checkpoint.save",
+                        attributes={"aurumlab.plan.step": "cache_lookup"},
+                    )
+                    if self.telemetry is not None
+                    else nullcontext()
+                )
+                with checkpoint_scope:
+                    session.persist("cache_lookup", lookup, runtime, events)
             return lookup
         except Exception:
             runtime.fail("cache_lookup")
@@ -678,7 +815,7 @@ class AurumAgent:
         *,
         cache_policy: Literal["use", "refresh", "bypass"] = "use",
     ) -> RunResponse:
-        return await self._execute(question, cache_policy=cache_policy)
+        return await self._observed_execute(question, cache_policy=cache_policy)
 
     async def run_checkpointed(
         self,
@@ -693,7 +830,7 @@ class AurumAgent:
         trusted_consumed_approval: ApprovalRequest | None = None,
     ) -> RunResponse:
         """Execute for a Worker, persisting after every completed Plan step."""
-        return await self._execute(
+        return await self._observed_execute(
             question,
             cache_policy=cache_policy,
             checkpoint=checkpoint,
@@ -720,7 +857,7 @@ class AurumAgent:
         current_plan = self.planner.build(self.skills.get(pending.route.skill))
         if current_plan.plan_id != pending.plan.plan_id:
             raise ApprovalBindingError("plan changed after approval was requested")
-        return await self._execute(
+        return await self._observed_execute(
             pending.question,
             cache_policy=pending.requested_cache_policy,
             run_id=pending.run_id,
@@ -730,6 +867,51 @@ class AurumAgent:
             prior_audit=pending.tool_audit,
             expected_plan_id=pending.plan.plan_id,
         )
+
+    async def _observed_execute(self, question: str, **kwargs: Any) -> RunResponse:
+        started = perf_counter()
+        job_id = kwargs.get("checkpoint_job_id")
+        scope = (
+            self.telemetry.span(
+                "aurumlab.agent.run",
+                attributes={
+                    **({"aurumlab.job.id": job_id} if job_id else {}),
+                },
+                kind=SpanKind.INTERNAL,
+            )
+            if self.telemetry is not None
+            else nullcontext()
+        )
+        with scope as span:
+            try:
+                response = await self._execute(question, **kwargs)
+            except Exception as exc:
+                if span is not None:
+                    self.telemetry.mark_error(span, type(exc).__name__)
+                if self.telemetry is not None:
+                    self.telemetry.count(
+                        "aurumlab.agent.runs", attributes={"intent": "unknown", "status": "error"}
+                    )
+                raise
+            duration_ms = round((perf_counter() - started) * 1_000, 2)
+            if span is not None:
+                span.set_attribute("aurumlab.run.id", response.run_id)
+                span.set_attribute(
+                    "aurumlab.intent", response.route.intent if response.route else "unknown"
+                )
+                span.set_attribute("aurumlab.skill", response.skill)
+                span.set_attribute("aurumlab.cache.status", response.cache_status)
+            if self.telemetry is not None:
+                attributes = {
+                    "intent": response.route.intent if response.route else "unknown",
+                    "status": response.status,
+                    "cache_status": response.cache_status,
+                }
+                self.telemetry.count("aurumlab.agent.runs", attributes=attributes)
+                self.telemetry.record(
+                    "aurumlab.agent.run.duration", duration_ms, attributes=attributes
+                )
+            return response
 
     def deny_approval(self, run_id: str, approval_id: str) -> RunResponse:
         pending = self.runs.get(run_id)
@@ -773,7 +955,7 @@ class AurumAgent:
                 "events": events,
             }
         )
-        self.runs.save(response)
+        self._save_run(response)
         return response
 
     async def _execute(
@@ -808,7 +990,16 @@ class AurumAgent:
         plan: ExecutionPlan | None = None
         runtime: PlanRuntime | None = None
         route_started = perf_counter()
-        route = route_override or await self.router.route(question)
+        route_scope = (
+            self.telemetry.span("aurumlab.agent.route")
+            if self.telemetry is not None
+            else nullcontext()
+        )
+        with route_scope as route_span:
+            route = route_override or await self.router.route(question)
+            if route_span is not None:
+                route_span.set_attribute("aurumlab.intent", route.intent)
+                route_span.set_attribute("aurumlab.skill", route.skill)
         if checkpoint is None:
             events.append(
                 AgentEvent(
@@ -857,7 +1048,7 @@ class AurumAgent:
                 events=events,
                 created_at=created_at,
             )
-            self.runs.save(response)
+            self._save_run(response)
             return response
 
         skill = self.skills.get(route.skill)
@@ -901,7 +1092,18 @@ class AurumAgent:
         try:
             plan_started = perf_counter()
             try:
-                plan = self.planner.build(skill)
+                plan_scope = (
+                    self.telemetry.span(
+                        "aurumlab.agent.plan",
+                        attributes={"aurumlab.skill": f"{skill.name}@{skill.version}"},
+                    )
+                    if self.telemetry is not None
+                    else nullcontext()
+                )
+                with plan_scope as plan_span:
+                    plan = self.planner.build(skill)
+                    if plan_span is not None:
+                        plan_span.set_attribute("aurumlab.plan.id", plan.plan_id)
                 if expected_plan_id is not None and plan.plan_id != expected_plan_id:
                     raise ApprovalBindingError("plan changed after approval was requested")
                 runtime = (
@@ -966,6 +1168,7 @@ class AurumAgent:
                 approval_token=approval_token,
                 trusted_consumed_approval=trusted_consumed_approval,
                 on_approval_consumed=approval_consumed,
+                telemetry=self.telemetry,
             )
 
             if checkpoint_job_id is not None:
@@ -1084,15 +1287,44 @@ class AurumAgent:
                 created_at=created_at,
             )
 
-        self.runs.save(response)
+        self._save_run(response)
         if cache_task is not None and response.cache_status in {
             "miss",
             "semantic_candidate",
             "refresh",
         }:
             try:
-                self.artifacts.store(cache_task, response, ttl_seconds=cache_ttl)
+                self._store_artifact(cache_task, response, cache_ttl)
             except Exception as exc:  # noqa: BLE001 -- result remains valid when cache write fails
                 response.warnings.append(f"Artifact Cache 写入失败：{type(exc).__name__}")
-                self.runs.save(response)
+                self._save_run(response)
         return response
+
+    def _save_run(self, response: RunResponse) -> None:
+        scope = (
+            self.telemetry.span(
+                "aurumlab.store.run.save",
+                attributes={"aurumlab.run.id": response.run_id},
+            )
+            if self.telemetry is not None
+            else nullcontext()
+        )
+        with scope:
+            self.runs.save(response)
+
+    def _store_artifact(
+        self,
+        task: TaskFingerprint,
+        response: RunResponse,
+        ttl_seconds: int | None,
+    ) -> None:
+        scope = (
+            self.telemetry.span(
+                "aurumlab.store.artifact.save",
+                attributes={"aurumlab.run.id": response.run_id},
+            )
+            if self.telemetry is not None
+            else nullcontext()
+        )
+        with scope:
+            self.artifacts.store(task, response, ttl_seconds=ttl_seconds)

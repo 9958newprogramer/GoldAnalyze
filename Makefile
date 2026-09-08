@@ -1,6 +1,6 @@
 PYTHON ?= python3.12
 
-.PHONY: install run worker redis-up redis-down mcp eval demo-memory test lint verify
+.PHONY: install run worker redis-up redis-down observability-up observability-down mcp eval demo-memory test lint verify
 
 install:
 	$(PYTHON) -m venv .venv
@@ -17,6 +17,12 @@ redis-up:
 
 redis-down:
 	docker compose -f compose.redis.yaml down
+
+observability-up:
+	docker compose -f compose.observability.yaml up -d
+
+observability-down:
+	docker compose -f compose.observability.yaml down
 
 mcp:
 	.venv/bin/aurumlab-mcp

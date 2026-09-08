@@ -76,6 +76,8 @@ class JobRepository:
                     cache_policy TEXT NOT NULL,
                     request_fingerprint TEXT NOT NULL,
                     idempotency_digest TEXT UNIQUE,
+                    traceparent TEXT,
+                    tracestate TEXT,
                     attempts INTEGER NOT NULL,
                     max_attempts INTEGER NOT NULL,
                     run_id TEXT,
@@ -126,6 +128,13 @@ class JobRepository:
                 ON agent_jobs(status, lease_expires_at);
                 """
             )
+            columns = {
+                row[1] for row in connection.execute("PRAGMA table_info(agent_jobs)").fetchall()
+            }
+            if "traceparent" not in columns:
+                connection.execute("ALTER TABLE agent_jobs ADD COLUMN traceparent TEXT")
+            if "tracestate" not in columns:
+                connection.execute("ALTER TABLE agent_jobs ADD COLUMN tracestate TEXT")
 
     def connect(self) -> sqlite3.Connection:
         return _connect(self.path)
@@ -199,6 +208,8 @@ class JobRepository:
         max_attempts: int,
         *,
         idempotency_key: str | None,
+        traceparent: str | None = None,
+        tracestate: str | None = None,
     ) -> tuple[AgentJob, bool]:
         fingerprint = _request_fingerprint(question, cache_policy, max_attempts)
         key_digest = _idempotency_digest(idempotency_key) if idempotency_key else None
@@ -220,8 +231,9 @@ class JobRepository:
                 """
                 INSERT INTO agent_jobs(
                     job_id, status, question, cache_policy, request_fingerprint,
-                    idempotency_digest, attempts, max_attempts, created_at, updated_at
-                ) VALUES (?, 'queued', ?, ?, ?, ?, 0, ?, ?, ?)
+                    idempotency_digest, traceparent, tracestate, attempts, max_attempts,
+                    created_at, updated_at
+                ) VALUES (?, 'queued', ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
                 """,
                 (
                     job_id,
@@ -229,6 +241,8 @@ class JobRepository:
                     cache_policy,
                     fingerprint,
                     key_digest,
+                    traceparent,
+                    tracestate,
                     max_attempts,
                     now.isoformat(),
                     now.isoformat(),
@@ -253,6 +267,15 @@ class JobRepository:
                 "SELECT * FROM agent_jobs WHERE job_id = ?", (job_id,)
             ).fetchone()
         return self._job(row) if row else None
+
+    def get_trace_context(self, job_id: str) -> tuple[str | None, str | None]:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT traceparent, tracestate FROM agent_jobs WHERE job_id = ?", (job_id,)
+            ).fetchone()
+        if row is None:
+            raise KeyError("job not found")
+        return row["traceparent"], row["tracestate"]
 
     def claim(self, job_id: str, worker_id: str, lease_seconds: int) -> AgentJob | None:
         now = _utc_now()

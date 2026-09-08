@@ -6,7 +6,7 @@
     <meta name="description" content="AurumLab Agent execution and artifact-memory platform" />
     <title>AurumLab · Agent Experiment Console</title>
     <link rel="icon" href="/static/favicon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="/static/styles.css" />
+    <link rel="stylesheet" href="/static/styles.css?v=0.9.0" />
   </head>
   <body>
     <main class="shell">
@@ -19,7 +19,7 @@
       </header>
 
       <section class="hero">
-        <p class="eyebrow">LLM ROUTER · BOUNDED PLAN · REDIS WORKER · CHECKPOINT · MCP</p>
+        <p class="eyebrow">LLM ROUTER · BOUNDED PLAN · REDIS WORKER · MCP · OTEL</p>
         <h1>新任务完整执行，旧结果<br /><span>带着出处快速复用</span></h1>
         <p class="lede">黄金只是可验证的业务场景。Agent 将自然语言编译成稳定任务指纹：相同规格复用结构化 Artifact，相似但不同的策略仍重新执行，并完整记录来源、失效原因和节省成本。</p>
       </section>
@@ -75,6 +75,7 @@
             <div><dt>MCP Server</dt><dd>aurumlab-mcp</dd></div>
             <div><dt>MCP Client</dt><dd id="mcp-client">动态发现中</dd></div>
             <div><dt>Async Runtime</dt><dd id="async-runtime">检测中</dd></div>
+            <div><dt>OpenTelemetry</dt><dd id="otel-runtime">检测中</dd></div>
           </dl>
           <div class="boundary">
             <span>Policy</span>
@@ -91,6 +92,15 @@
       <section id="job-panel" class="job-panel panel hidden" aria-live="polite">
         <div class="panel-heading compact"><div><p class="kicker">ASYNC JOB · SSE</p><h2 id="job-title">任务事件流</h2></div><span id="job-state" class="badge">QUEUED</span></div>
         <ol id="job-events" class="job-events"></ol>
+      </section>
+
+      <section class="telemetry-panel panel" aria-labelledby="telemetry-title">
+        <div class="panel-heading compact">
+          <div><p class="kicker">OBSERVABILITY · W3C TRACE CONTEXT</p><h2 id="telemetry-title">OpenTelemetry 证据</h2></div>
+          <span id="otel-span-count" class="badge">0 SPANS</span>
+        </div>
+        <p id="otel-summary" class="telemetry-summary">等待首个 Agent Trace；观测数据不会记录 Prompt、Tool 参数或审批凭证。</p>
+        <ol id="otel-spans" class="job-events telemetry-spans"></ol>
       </section>
 
       <section class="quality panel" aria-labelledby="quality-title">
@@ -171,6 +181,6 @@
         </article>
       </section>
     </main>
-    <script src="/static/app.js?v=0.8.0" defer></script>
+    <script src="/static/app.js?v=0.9.0" defer></script>
   </body>
 </html>
