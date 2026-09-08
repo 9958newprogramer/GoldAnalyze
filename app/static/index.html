@@ -19,7 +19,7 @@
       </header>
 
       <section class="hero">
-        <p class="eyebrow">LLM ROUTER · BOUNDED PLAN · GOVERNED EXECUTOR · MCP CLIENT/SERVER</p>
+        <p class="eyebrow">LLM ROUTER · BOUNDED PLAN · REDIS WORKER · CHECKPOINT · MCP</p>
         <h1>新任务完整执行，旧结果<br /><span>带着出处快速复用</span></h1>
         <p class="lede">黄金只是可验证的业务场景。Agent 将自然语言编译成稳定任务指纹：相同规格复用结构化 Artifact，相似但不同的策略仍重新执行，并完整记录来源、失效原因和节省成本。</p>
       </section>
@@ -40,6 +40,13 @@
               <button type="button" class="example" data-query="你好，你能做什么？">能力说明</button>
             </div>
             <div class="form-footer">
+              <div class="policy-control">
+                <label for="execution-mode">Execution mode</label>
+                <select id="execution-mode" name="execution-mode">
+                  <option value="sync">Sync Run · 无 Redis</option>
+                  <option value="async">Async Job · Redis + SSE</option>
+                </select>
+              </div>
               <div class="policy-control">
                 <label for="cache-policy">Artifact policy</label>
                 <select id="cache-policy" name="cache-policy">
@@ -67,6 +74,7 @@
             <div><dt>Artifact Memory</dt><dd id="cache-runtime">检测中</dd></div>
             <div><dt>MCP Server</dt><dd>aurumlab-mcp</dd></div>
             <div><dt>MCP Client</dt><dd id="mcp-client">动态发现中</dd></div>
+            <div><dt>Async Runtime</dt><dd id="async-runtime">检测中</dd></div>
           </dl>
           <div class="boundary">
             <span>Policy</span>
@@ -77,6 +85,12 @@
 
       <section id="live-state" class="live-state panel" aria-live="polite">
         <span class="loader"></span><div><p class="kicker">AGENT STATUS</p><strong id="live-message">等待任务</strong></div>
+        <button id="cancel-job" class="secondary danger hidden" type="button">软取消 Job</button>
+      </section>
+
+      <section id="job-panel" class="job-panel panel hidden" aria-live="polite">
+        <div class="panel-heading compact"><div><p class="kicker">ASYNC JOB · SSE</p><h2 id="job-title">任务事件流</h2></div><span id="job-state" class="badge">QUEUED</span></div>
+        <ol id="job-events" class="job-events"></ol>
       </section>
 
       <section class="quality panel" aria-labelledby="quality-title">
@@ -157,6 +171,6 @@
         </article>
       </section>
     </main>
-    <script src="/static/app.js" defer></script>
+    <script src="/static/app.js?v=0.8.0" defer></script>
   </body>
 </html>

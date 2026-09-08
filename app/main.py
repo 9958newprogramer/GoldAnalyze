@@ -234,6 +234,7 @@ def _parse_last_event_id(value: str | None) -> int:
 async def stream_job_events(
     job_id: str,
     request: Request,
+    after: int = Query(default=0, ge=0),
     last_event_id: Annotated[
         str | None,
         Header(alias="Last-Event-ID", max_length=18),
@@ -242,7 +243,7 @@ async def stream_job_events(
     _validate_job_id(job_id)
     if services.jobs.get(job_id) is None:
         raise HTTPException(status_code=404, detail="Job 不存在")
-    cursor = _parse_last_event_id(last_event_id)
+    cursor = max(after, _parse_last_event_id(last_event_id))
 
     async def generate():
         nonlocal cursor

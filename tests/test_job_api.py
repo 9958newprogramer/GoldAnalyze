@@ -82,6 +82,7 @@ def test_worker_result_and_sse_support_last_event_id_reconnect(monkeypatch, tmp_
             f"/api/jobs/{created['job_id']}/stream",
             headers={"Last-Event-ID": "2"},
         )
+        resumed_query = client.get(f"/api/jobs/{created['job_id']}/stream?after=4")
 
     assert job.json()["status"] == "completed"
     assert "id: 1" in all_events.text
@@ -89,6 +90,8 @@ def test_worker_result_and_sse_support_last_event_id_reconnect(monkeypatch, tmp_
     assert "id: 1\n" not in resumed.text
     assert "id: 2\n" not in resumed.text
     assert "id: 3\n" in resumed.text
+    assert "id: 4\n" not in resumed_query.text
+    assert "id: 5\n" in resumed_query.text
     assert all_events.headers["cache-control"] == "no-cache, no-transform"
 
 

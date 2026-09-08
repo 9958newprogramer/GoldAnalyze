@@ -36,7 +36,17 @@
 - 打通 HTTP、Web 和 MCP 审批恢复链：Web 可展示暂停步骤、风险和参数摘要并批准/拒绝；MCP 只接受控制面签发的凭证恢复，不向 Agent 暴露自批准能力。
 - 将外部研究和动态 MCP Tool 默认纳入审批范围，补充伪造、过期、跨任务、参数篡改、重放、并发竞争、明确审批意图及审计一致性测试；Golden Set v5 验证真实 `review → consume → execute` 链路。
 
-当前实现是本地单用户 HITL 演示，不能在简历或面试中表述为“企业级 RBAC/身份认证”。v0.8 前的 resume 会重放确定性 control steps，不应表述为持久化 Checkpoint 恢复。
+当前实现是本地单用户 HITL 演示，不能在简历或面试中表述为“企业级 RBAC/身份认证”。同步 `/api/runs` 的 resume 仍会重放确定性 control steps；只有 Redis Worker 的异步 Job 路径实现逐 Plan step 持久化 Checkpoint 恢复，面试时必须准确区分。
+
+## v0.8 新增的可写要点
+
+- 设计 Redis Streams Consumer Group + SQLite source-of-truth 的异步控制面：HTTP 202 创建 Job，消息仅携带不透明 Job ID；Worker 以租约 CAS 认领，业务状态持久化成功后才 ACK，崩溃消息通过 PEL `XAUTOCLAIM` 恢复。
+- 实现版本化 JSON Checkpoint，在每个确定性 Plan step 后保存连续执行指针、显式类型化输出、Event 与 Tool Audit；恢复时校验问题指纹和稳定 Plan ID，从下一步继续并避免重复调用已完成 Tool。
+- 支持 SHA-256 幂等键、步骤边界软取消、步骤级硬超时、1–3 次有限重试、错误分类和 dead-letter；固定取消与完成、Redis claim 与 SQLite lease 等并发竞态语义。
+- 基于 SQLite 单调 Event ID 实现 SSE，支持 `Last-Event-ID` 断线续传、heartbeat 和终态自动关闭；Web 可切换同步/异步执行并展示排队、步骤、恢复、重试与取消状态。
+- 将 HITL 扩展到异步 Job：控制面先原子消费一次性 token，Worker 再校验持久化 grant 与 Run/Plan/Step/Tool/参数/effect/risk 绑定；原始凭证不进入 Redis、Job、Checkpoint、Run 或 Audit。
+
+可量化表述必须引用最新验证记录。当前 v0.8 定向与全量测试覆盖重复提交、双 Worker 竞争、Worker 崩溃、active lease reclaim、取消竞态、超时、有限重试/死信、Checkpoint 恢复、SSE 重连与异步审批；最终数字以 `docs/PROGRESS.md` 为准。
 
 ## 面试时主动强调
 
@@ -46,4 +56,4 @@
 
 ## 下一版本增量表述（尚不可作为已完成能力）
 
-v0.8 将增加 Redis Streams Worker、SSE、幂等、取消、超时、有限重试与持久化 Checkpoint；完成并验证前不能写入“已实现”简历条目。
+v0.9 将增加 OpenTelemetry Trace 与运行指标；v1.0 才会完成 100+ Golden Set、CI、完整 Docker、非金融 Skill 和演示证据包。在对应版本验证前不能写成已完成。

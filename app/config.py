@@ -85,6 +85,7 @@ class Settings:
     )
     approval_ttl_seconds: int = _bounded_int_from_env("APPROVAL_TTL_SECONDS", 300, 30, 3_600)
     redis_url: str = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
+    redis_protocol: int = _bounded_int_from_env("REDIS_PROTOCOL", 2, 2, 3)
     job_stream_name: str = os.getenv("JOB_STREAM_NAME", "aurumlab:jobs:v1")
     job_consumer_group: str = os.getenv("JOB_CONSUMER_GROUP", "aurumlab-workers-v1")
     job_lease_seconds: int = _bounded_int_from_env("JOB_LEASE_SECONDS", 60, 5, 600)

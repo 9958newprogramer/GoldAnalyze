@@ -82,6 +82,7 @@ select { border: 1px solid var(--line); background: #0d0f10; color: var(--text);
 .live-state { display: flex; align-items: center; gap: 14px; margin-top: 18px; padding: 17px 20px; }
 .live-state .kicker { margin-bottom: 4px; }
 .live-state strong { font-size: 13px; font-weight: 500; }
+.live-state #cancel-job { margin-left: auto; }
 .loader { width: 10px; height: 10px; border: 2px solid #4c5156; border-top-color: var(--gold); border-radius: 50%; }
 .live-state.running .loader { animation: spin 700ms linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
@@ -106,6 +107,13 @@ select { border: 1px solid var(--line); background: #0d0f10; color: var(--text);
 
 .results { padding-top: 62px; }
 .hidden { display: none !important; }
+.job-panel { margin-top: 18px; padding: 22px; }
+.job-events { list-style: none; margin: 0; padding: 0; }
+.job-events li { display: grid; grid-template-columns: 54px 150px minmax(0, 1fr); gap: 12px; padding: 11px 0; border-top: 1px solid var(--line); font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.job-events li:first-child { border-top: 0; }
+.job-event-id { color: var(--gold-soft); }
+.job-event-type { color: #c3c6ca; }
+.job-event-message { color: var(--muted); }
 .result-heading { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 22px; }
 .approval-panel { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 28px; align-items: end; margin-bottom: 14px; padding: 22px; border-color: rgba(214, 169, 74, 0.48); background: linear-gradient(135deg, rgba(91, 67, 20, 0.2), rgba(18, 20, 22, 0.96)); }
 .approval-panel h2 { margin: 0; font-size: 19px; }
@@ -184,6 +192,10 @@ pre { margin: 18px 0 0; padding: 15px; max-height: 265px; overflow: auto; backgr
   .hero h1 { font-size: 43px; }
   .composer, .runtime, .chart-panel, .summary-panel, .plan-panel, .trace-panel, .audit-panel { padding: 19px; }
   .form-footer, .result-heading { align-items: stretch; flex-direction: column; }
+  .live-state { align-items: flex-start; flex-wrap: wrap; }
+  .live-state #cancel-job { margin-left: 0; width: 100%; }
+  .job-events li { grid-template-columns: 45px minmax(0, 1fr); }
+  .job-event-message { grid-column: 2; }
   .approval-facts { grid-template-columns: 1fr; }
   .approval-actions { align-items: stretch; flex-direction: column-reverse; }
   .primary { width: 100%; }

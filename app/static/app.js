@@ -6,10 +6,16 @@ const liveMessage = document.querySelector("#live-message");
 const results = document.querySelector("#results");
 const evalButton = document.querySelector("#eval-button");
 const cachePolicy = document.querySelector("#cache-policy");
+const executionMode = document.querySelector("#execution-mode");
+const cancelJobButton = document.querySelector("#cancel-job");
+const jobPanel = document.querySelector("#job-panel");
 const approvalPanel = document.querySelector("#approval-panel");
 const approveApprovalButton = document.querySelector("#approve-approval");
 const denyApprovalButton = document.querySelector("#deny-approval");
 let pendingApproval = null;
+let activeJobId = null;
+let activeEventSource = null;
+let lastJobEventId = 0;
 
 const backtestMetricDefinitions = [
   ["total_return_pct", "Total return", "%"],
@@ -61,6 +67,10 @@ async function loadRuntime() {
     setText(
       "#mcp-client",
       `${health.mcp_client_connected_servers} server · ${health.mcp_client_discovered_tools} namespaced tools`,
+    );
+    setText(
+      "#async-runtime",
+      `${health.async_job_transport} · ${health.async_job_consumer_group}`,
     );
   } catch {
     setText("#health-label", "API unavailable");
@@ -291,7 +301,7 @@ function renderPlan(plan) {
   });
 }
 
-function renderApproval(run) {
+function renderApproval(run, jobId = null) {
   if (run.status !== "pending_approval" || !run.approval) {
     pendingApproval = null;
     approvalPanel.classList.add("hidden");
@@ -300,6 +310,7 @@ function renderApproval(run) {
   pendingApproval = {
     runId: run.run_id,
     approvalId: run.approval.approval_id,
+    jobId,
   };
   setText("#approval-tool", run.approval.tool_name);
   setText("#approval-risk", `${run.approval.effect} / ${run.approval.risk}`);
@@ -349,7 +360,7 @@ function renderCache(cache, status) {
   box.classList.remove("hidden");
 }
 
-function renderResult(run) {
+function renderResult(run, jobId = null) {
   results.classList.remove("hidden");
   const intent = run.route ? run.route.intent : "legacy";
   setText("#run-id", `${run.status.toUpperCase()} · ${intent} · ${run.run_id}`);
@@ -366,7 +377,7 @@ function renderResult(run) {
   setText("#strategy-spec", JSON.stringify(artifact, null, 2));
   renderWarnings(run.warnings);
   renderCache(run.cache, run.cache_status);
-  renderApproval(run);
+  renderApproval(run, jobId);
   renderPlan(run.plan);
   renderTrace(run.events || []);
   renderAudit(run.tool_audit || []);
@@ -396,16 +407,24 @@ approveApprovalButton.addEventListener("click", async () => {
       ),
       "审批失败",
     );
+    const resumePath = approval.jobId
+      ? `/api/jobs/${approval.jobId}/resume`
+      : `/api/runs/${approval.runId}/resume`;
     const resumed = await readResponse(
-      await fetch(`/api/runs/${approval.runId}/resume`, {
+      await fetch(resumePath, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ approval_token: grant.approval_token }),
       }),
       "恢复执行失败",
     );
-    renderResult(resumed);
-    liveMessage.textContent = "审批凭证已原子消费，受控 Tool 执行完成";
+    if (approval.jobId) {
+      liveMessage.textContent = "审批已消费，Job 已重新入队";
+      await watchJob(approval.jobId, false);
+    } else {
+      renderResult(resumed);
+      liveMessage.textContent = "审批凭证已原子消费，受控 Tool 执行完成";
+    }
   } catch (error) {
     liveMessage.textContent = `审批失败：${error.message}`;
   } finally {
@@ -433,6 +452,9 @@ denyApprovalButton.addEventListener("click", async () => {
       ),
       "拒绝审批失败",
     );
+    if (approval.jobId) {
+      await fetch(`/api/jobs/${approval.jobId}`, { method: "DELETE" });
+    }
     renderResult(denied);
     liveMessage.textContent = "审批已拒绝，受控 Tool 未执行";
   } catch (error) {
@@ -441,6 +463,102 @@ denyApprovalButton.addEventListener("click", async () => {
     liveState.classList.remove("running");
     approveApprovalButton.disabled = false;
     denyApprovalButton.disabled = false;
+  }
+});
+
+const jobEventTypes = [
+  "job_queued",
+  "job_started",
+  "step_completed",
+  "approval_required",
+  "approval_resumed",
+  "retry_scheduled",
+  "cancel_requested",
+  "job_completed",
+  "job_failed",
+  "job_cancelled",
+  "job_timed_out",
+  "dead_lettered",
+  "checkpoint_restored",
+];
+
+function appendJobEvent(event) {
+  const list = document.querySelector("#job-events");
+  const item = document.createElement("li");
+  const id = document.createElement("span");
+  id.className = "job-event-id";
+  id.textContent = `#${event.event_id}`;
+  const type = document.createElement("span");
+  type.className = "job-event-type";
+  type.textContent = event.event_type;
+  const message = document.createElement("span");
+  message.className = "job-event-message";
+  message.textContent = event.message;
+  item.append(id, type, message);
+  list.append(item);
+  lastJobEventId = Math.max(lastJobEventId, event.event_id);
+  setText("#job-state", event.status.toUpperCase());
+  liveMessage.textContent = event.message;
+}
+
+async function loadJobResult(jobId) {
+  const job = await readResponse(await fetch(`/api/jobs/${jobId}`), "读取 Job 失败");
+  if (job.run_id) {
+    const run = await readResponse(await fetch(`/api/runs/${job.run_id}`), "读取 Run 失败");
+    renderResult(run, job.status === "waiting_approval" ? jobId : null);
+  }
+  return job;
+}
+
+function watchJob(jobId, resetEvents = true) {
+  if (activeEventSource) activeEventSource.close();
+  activeJobId = jobId;
+  jobPanel.classList.remove("hidden");
+  cancelJobButton.classList.remove("hidden");
+  setText("#job-title", `任务事件流 · ${jobId}`);
+  if (resetEvents) document.querySelector("#job-events").replaceChildren();
+  if (resetEvents) lastJobEventId = 0;
+  return new Promise((resolve, reject) => {
+    const source = new EventSource(`/api/jobs/${jobId}/stream?after=${lastJobEventId}`);
+    activeEventSource = source;
+    jobEventTypes.forEach((eventType) => {
+      source.addEventListener(eventType, async (message) => {
+        try {
+          const event = JSON.parse(message.data);
+          appendJobEvent(event);
+          if (event.event_type === "approval_required") {
+            source.close();
+            cancelJobButton.classList.add("hidden");
+            await loadJobResult(jobId);
+            resolve();
+          } else if (["job_completed", "job_failed", "job_cancelled", "job_timed_out", "dead_lettered"].includes(event.event_type)) {
+            source.close();
+            cancelJobButton.classList.add("hidden");
+            await loadJobResult(jobId);
+            resolve();
+          }
+        } catch (error) {
+          source.close();
+          reject(error);
+        }
+      });
+    });
+  });
+}
+
+cancelJobButton.addEventListener("click", async () => {
+  if (!activeJobId) return;
+  cancelJobButton.disabled = true;
+  try {
+    const job = await readResponse(
+      await fetch(`/api/jobs/${activeJobId}`, { method: "DELETE" }),
+      "取消 Job 失败",
+    );
+    liveMessage.textContent = `取消状态：${job.status}`;
+  } catch (error) {
+    liveMessage.textContent = `取消失败：${error.message}`;
+  } finally {
+    cancelJobButton.disabled = false;
   }
 });
 
@@ -464,12 +582,34 @@ form.addEventListener("submit", async (event) => {
   liveState.classList.add("running");
   liveMessage.textContent = statusMessages[messageIndex];
   submitButton.disabled = true;
-  const timer = window.setInterval(() => {
+  let timer = window.setInterval(() => {
     messageIndex = Math.min(messageIndex + 1, statusMessages.length - 1);
     liveMessage.textContent = statusMessages[messageIndex];
   }, 450);
 
   try {
+    if (executionMode.value === "async") {
+      const idempotencyKey = globalThis.crypto?.randomUUID?.() || `web-${Date.now()}`;
+      const job = await readResponse(
+        await fetch("/api/jobs", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Idempotency-Key": idempotencyKey,
+          },
+          body: JSON.stringify({
+            question: question.value,
+            cache_policy: cachePolicy.value,
+          }),
+        }),
+        "异步 Job 创建失败",
+      );
+      window.clearInterval(timer);
+      timer = null;
+      liveMessage.textContent = `Job ${job.job_id} 已排队，等待 Worker…`;
+      await watchJob(job.job_id);
+      return;
+    }
     const response = await fetch("/api/runs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -489,7 +629,7 @@ form.addEventListener("submit", async (event) => {
   } catch (error) {
     liveMessage.textContent = `请求失败：${error.message}`;
   } finally {
-    window.clearInterval(timer);
+    if (timer) window.clearInterval(timer);
     liveState.classList.remove("running");
     submitButton.disabled = false;
   }

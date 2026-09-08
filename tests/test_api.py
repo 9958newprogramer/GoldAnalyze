@@ -16,8 +16,11 @@ def test_health_and_home_are_available():
     assert health.json()["planner"].startswith("deterministic-skill-planner")
     assert health.json()["router_mode"] == "rule-fallback"
     assert health.json()["router_llm_configured"] is False
+    assert health.json()["async_job_transport"] == "redis-streams"
+    assert health.json()["async_job_consumer_group"] == "aurumlab-workers-v1"
     assert home.status_code == 200
     assert "AurumLab" in home.text
+    assert "Async Job · Redis + SSE" in home.text
     assert home.headers["x-frame-options"] == "DENY"
 
 

@@ -8,11 +8,16 @@ AurumLab 的主语是 Agent 工程，不是黄金策略：
 
 这与 AgentForge 形成互补：AgentForge 重点展示 Agentic RAG 和知识库工作流；AurumLab 重点展示意图路由、Skill/MCP、工具治理、确定性任务执行、降级策略和自动评测。
 
-## v0.7 运行架构
+## v0.8 运行架构
 
 ```text
-Web / HTTP / MCP
-        ↓
+Web / HTTP / MCP ── sync ───────────────────────────────┐
+        │                                               ↓
+        └─ async Job API → SQLite Job/Event → Redis Stream → Worker
+                                               │            ├─ lease/CAS
+                                               │            ├─ timeout/retry/cancel
+                                               └─ PEL claim  └─ step Checkpoint → SSE
+                                                            ↓
     AurumAgent
         ├── Preflight Threat Detection ── deny → zero tool call
         ├── LLM Intent Classifier
@@ -80,11 +85,17 @@ Tool 注册时必须声明 effect、risk、来源和审批要求。Policy 使用
 
 用户输入和模型输出都不可信。AurumLab 只接受 Pydantic 任务规格，领域层执行固定函数；SQLite 行情库只读、参数化查询，标识符经过校验。这样每次 Run 都可测试、比较和持久化。
 
-### 8. 暂不使用 LangGraph
+### 8. Redis 负责投递，SQLite 负责业务真相
 
-AgentForge 已展示 LangGraph。当前显式 Orchestrator 更能突出路由、Skill、Policy 与执行语义；v0.7 的审批恢复会重放确定性 control steps，v0.8 再以持久化 Worker Checkpoint 解决长任务和进程重启恢复，不为了技术栈重叠提前引入图框架。
+异步 API 先持久化 Job，再向 Redis Stream 投递只含 Job ID 的消息。Consumer Group 提供 at-least-once 分发，SQLite lease owner 和条件更新决定唯一业务执行权；只有终态、重试或审批等待写入成功后才 ACK。Worker 崩溃时消息留在 PEL，恢复 Worker 通过 `XAUTOCLAIM` 后还必须等待旧 SQLite 租约过期。Redis 暂时不可用不会丢 Job，同幂等键重试可重新投递。
 
-### 9. 相似不等于可复用
+每个 Plan step 完成后，Checkpoint 用显式 JSON codec 保存输出和连续 cursor。恢复同时核对问题指纹、Plan ID 与步骤前缀；未知类型、版本漂移或非连续步骤 fail closed。SSE 直接读取 SQLite append-only JobEvent，使浏览器 cursor 与业务状态一致。
+
+### 9. 暂不使用 LangGraph
+
+AgentForge 已展示 LangGraph。当前显式 Orchestrator 更能突出路由、Skill、Policy 与执行语义；异步 Worker 已使用持久化 Checkpoint 解决长任务和进程重启恢复，不为了技术栈重叠引入图框架。
+
+### 10. 相似不等于可复用
 
 只有规范化任务规格和数据版本完全一致时才自动复用。结构化相似度超过阈值只产生 `semantic_candidate`，新策略仍调用领域 Tool；这避免了用 10/30 均线的结果回答 11/31 均线。回测依赖行情版本，行情和外部检索还受 TTL 约束。详见 [`ARTIFACT_MEMORY.md`](ARTIFACT_MEMORY.md)。
 
@@ -109,7 +120,7 @@ EvalReportRepository → CLI exit code / API / Web panel
 
 ## 威胁模型
 
-| 边界 | 风险 | v0.7 控制 |
+| 边界 | 风险 | v0.8 控制 |
 |---|---|---|
 | HTTP/MCP 输入 | 超长输入、Prompt Injection、破坏指令 | 长度校验；Tool 前威胁预检；fail closed |
 | 路由、Plan 与 Skill | 误路由、乱序或越权计划 | Pydantic 枚举；服务端 Skill 映射；Plan Validator/Runtime；Per-Skill Allowlist 与预算 |
@@ -117,6 +128,8 @@ EvalReportRepository → CLI exit code / API / Web panel
 | 外部搜索 | 超时、重定向、不可信内容 | HTTPS；8 秒超时；不跟随重定向；有界验证 |
 | MCP Server → Client | 恶意 Tool 描述、Schema 漂移、参数/结果注入、DoS | Namespace；Draft 2020-12；Schema Pin；大小/分页/超时限制；Injection 拒绝；故障隔离 |
 | Tool review → resume | 凭证伪造、参数篡改、跨 Run 使用、重放、并发双消费 | 高熵一次性 token；hash-only 存储；多字段绑定；TTL；SQLite 原子消费 |
+| Redis / Worker | 重复投递、租约窃取、崩溃丢消息、无限重试 | Consumer Group + PEL；Redis claim 与 SQLite lease 双校验；完成后 ACK；最多 3 次；dead-letter |
+| Checkpoint / SSE | 任意反序列化、步骤重放、跨 Job 越界读取 | 版本化显式 JSON codec；问题/Plan/前缀校验；每 Job 单调 cursor；路径绑定查询 |
 | 行情 SQLite | SQL 注入、意外写入 | `mode=ro`；参数化值；标识符校验 |
 | 持久化 | Secret 泄露、缓存污染、陈旧结果 | 参数化 SQL；最小化 Artifact Snapshot；数据版本 + TTL；Run ID 校验 |
 | Eval API | 计算资源滥用 | 固定本地数据集；最多 50 案例 |
@@ -178,8 +191,10 @@ EvalReportRepository → CLI exit code / API / Web panel
 
 ### v0.8（长任务执行）
 
-- Worker 执行新回测，SSE 推送阶段进度。
-- 幂等、取消、超时、有限重试与恢复。
+- Redis Streams Consumer Group Worker、SQLite lease/CAS、PEL reclaim 和完成后 ACK。
+- 每个 Plan step 的版本化 JSON Checkpoint 与精确续跑。
+- 幂等、软取消、阶段超时、错误分类、有限重试和 dead-letter。
+- SSE 单调事件、`Last-Event-ID`、heartbeat、异步 HITL 与 Web 异步模式。
 
 ### v0.9（可观测）
 

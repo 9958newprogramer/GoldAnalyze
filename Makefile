@@ -1,6 +1,6 @@
 PYTHON ?= python3.12
 
-.PHONY: install run worker mcp eval demo-memory test lint verify
+.PHONY: install run worker redis-up redis-down mcp eval demo-memory test lint verify
 
 install:
 	$(PYTHON) -m venv .venv
@@ -11,6 +11,12 @@ run:
 
 worker:
 	.venv/bin/aurumlab-worker
+
+redis-up:
+	docker compose -f compose.redis.yaml up -d --wait
+
+redis-down:
+	docker compose -f compose.redis.yaml down
 
 mcp:
 	.venv/bin/aurumlab-mcp

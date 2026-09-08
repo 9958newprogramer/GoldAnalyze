@@ -4,7 +4,7 @@ AurumLab 是一个**面向 Agent 开发求职**的可运行作品集项目。黄
 
 > 只做研究与历史实验，不连接实盘，不执行用户提供的 Python、SQL 或 Shell，不构成投资建议。
 
-## v0.7 已实现的闭环
+## v0.8 已实现的闭环
 
 ```mermaid
 flowchart LR
@@ -33,6 +33,12 @@ flowchart LR
     G -->|allow| F[策略回测 / 行情查询 / 外部研究 / 直接回答]
     F --> J[结构化结果 + Trace + Audit]
     X & J --> K[SQLite 持久化 + Provenance]
+    A --> U[Async Job API]
+    U --> Z[Redis Streams Consumer Group]
+    Z --> W[Bounded Worker]
+    W --> P
+    W --> CP[逐 Plan Step Checkpoint]
+    CP --> SSE[SSE + Last-Event-ID]
 ```
 
 | 意图 | Skill | 主要产物 | Tool 预算 |
@@ -85,7 +91,7 @@ Web UI 支持批准并恢复或拒绝；MCP Server 只提供凭证恢复，不�
 
 ## 立即运行
 
-要求 Python 3.11+，建议 Python 3.12。
+要求 Python 3.11+，建议 Python 3.12。同步入口无需 Redis：
 
 ```bash
 python3.12 -m venv .venv
@@ -105,6 +111,45 @@ python3.12 -m venv .venv
 ```
 
 统一入口为 `POST /api/runs`。响应包含路由决策、选中的 Skill、已验证的 `ExecutionPlan`、任务规格、领域产物、Agent Event、Tool Audit、`cache_status`、来源 Run ID 和可再次读取的 Run ID。`cache_policy` 支持 `use`（默认）、`refresh` 和 `bypass`。
+
+## Redis Streams 异步任务与 Checkpoint
+
+长任务入口 `POST /api/jobs` 会先把 Job 和首个单调事件持久化到 SQLite，再向 Redis Stream 投递仅包含不透明 `job_id` 的消息，并以 HTTP 202 立即返回。独立 Worker 使用 Consumer Group 读取，只有在 SQLite 租约 CAS 成功后才执行；完成可靠状态提交后才 `XACK`。崩溃消息留在 PEL，由其他 Worker 通过 `XAUTOCLAIM` 和过期租约双重校验恢复。
+
+每个确定性 Plan step 完成后都会保存版本化 JSON Checkpoint，包括连续步骤指针、显式编码的结构化输出、Event 与 Tool Audit。恢复时核对问题 SHA-256、稳定 Plan ID 和步骤前缀，从下一步继续，不重放已完成 Tool。运行时支持步骤级硬超时、步骤边界软取消、最多 3 次调用方限定尝试、可重试错误分类和 dead-letter。
+
+启动异步演示需要 Docker Redis、API 和 Worker 三个进程：
+
+```bash
+make redis-up
+make run
+# 新终端
+make worker
+```
+
+连接真实 Redis 执行协议级 smoke test：
+
+```bash
+AURUMLAB_REDIS_TEST_URL=redis://127.0.0.1:6379/0 \
+  .venv/bin/pytest -q -m redis_integration
+```
+
+没有设置该环境变量时，`make verify` 会安全跳过这一项，其他单元、集成与 Golden Set 评测仍会完整运行。
+
+页面的 `Execution mode` 选择 `Async Job · Redis + SSE` 后，会显示 Job 事件、Checkpoint 进度和软取消按钮。也可以直接调用：
+
+```bash
+curl -i http://127.0.0.1:8010/api/jobs \
+  -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: demo-query-1' \
+  -d '{"question":"查询黄金最近12根1小时K线。","cache_policy":"bypass"}'
+
+curl -N http://127.0.0.1:8010/api/jobs/JOB_ID/stream
+curl -N http://127.0.0.1:8010/api/jobs/JOB_ID/stream -H 'Last-Event-ID: 3'
+curl -X DELETE http://127.0.0.1:8010/api/jobs/JOB_ID
+```
+
+同一幂等键与相同请求返回原 Job；同键改变请求返回 409。幂等键只以 SHA-256 保存。Redis 暂时不可用时 Job 仍在 SQLite，使用相同幂等键重试会修复投递。异步审批先沿用 HTTP 人工审批，再通过 `/api/jobs/{job_id}/resume` 原子消费 token 并重新入队；原始 token 不进入 Redis、Job、Checkpoint、Run 或 Audit。完整状态机与威胁模型见 [`docs/ASYNC_RUNTIME.md`](docs/ASYNC_RUNTIME.md)。
 
 ## Artifact Memory
 
@@ -241,6 +286,7 @@ make verify
 ```text
 app/
   agent/          # Intent Router、任务编译、Orchestrator
+  jobs/           # Redis Streams Broker、Worker、Checkpoint runtime、CLI
   domain/         # 行情适配器与确定性回测
   evals/          # Golden Set、Rubric、Runner、CLI
   approval.py     # HITL 状态机、参数绑定与一次性凭证
@@ -258,6 +304,6 @@ tests/
 docs/
 ```
 
-v0.7 已实现 allow/deny/review 风险策略与不可重放的人工审批凭证；v0.8 将引入 Redis Streams Worker、SSE 和持久化 Checkpoint。详见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)、[`docs/APPROVALS.md`](docs/APPROVALS.md)、[`docs/MCP_CLIENT.md`](docs/MCP_CLIENT.md)、[`docs/ARTIFACT_MEMORY.md`](docs/ARTIFACT_MEMORY.md) 与 [`docs/RESUME.md`](docs/RESUME.md)。
+v0.8 已实现 Redis Streams Worker、SSE、幂等、取消、超时、有限重试、dead-letter、异步审批与逐 Plan step 持久化 Checkpoint。详见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)、[`docs/ASYNC_RUNTIME.md`](docs/ASYNC_RUNTIME.md)、[`docs/APPROVALS.md`](docs/APPROVALS.md)、[`docs/MCP_CLIENT.md`](docs/MCP_CLIENT.md)、[`docs/ARTIFACT_MEMORY.md`](docs/ARTIFACT_MEMORY.md) 与 [`docs/RESUME.md`](docs/RESUME.md)。
 
 持续迭代的当前状态、验收证据、下一步和掉线恢复方式，以 [`docs/PROGRESS.md`](docs/PROGRESS.md) 为唯一进度真相源。

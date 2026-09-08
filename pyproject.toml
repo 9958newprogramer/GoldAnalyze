@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aurumlab"
-version = "0.7.0"
-description = "Multi-Skill agent runtime with bounded plans, governed MCP tools, HITL, and evals"
+version = "0.8.0"
+description = "Checkpointed multi-Skill agent runtime with Redis workers, governed MCP tools, HITL, and evals"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -38,6 +38,9 @@ aurumlab-worker = "app.jobs.cli:main"
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+  "redis_integration: requires AURUMLAB_REDIS_TEST_URL and a real Redis server",
+]
 
 [tool.ruff]
 line-length = 100

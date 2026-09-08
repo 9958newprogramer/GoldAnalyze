@@ -19,7 +19,7 @@ and-set transitions and leases ensure that only one Worker owns an execution att
 
 ```text
 queued ──claim──> running ──success────────────> completed
-  │                 │  │  ├─approval──────────> waiting_approval
+  │                 │  │  ├─approval──────────> waiting_approval ──grant──> queued
   │                 │  ├─retryable + budget───> queued
   │                 │  ├─retry exhausted──────> dead_letter
   │                 │  ├─non-retryable────────> failed
@@ -48,5 +48,27 @@ the repository converts the terminal transition to `cancelled`, so cancellation 
 ## Local development
 
 Production transport uses `redis.asyncio`. Tests use `fakeredis` only as a controllable Redis
-substitute for Consumer Group/Pending Entry fault scenarios. A real Redis container and the
-complete worker command are added before v0.8 is marked verified.
+substitute for Consumer Group/Pending Entry fault scenarios. Start the pinned Redis service and
+separate processes with:
+
+```bash
+make redis-up
+make run
+make worker  # in another terminal
+```
+
+Run the opt-in integration test against that real service with:
+
+```bash
+AURUMLAB_REDIS_TEST_URL=redis://127.0.0.1:6379/0 \
+  .venv/bin/pytest -q -m redis_integration
+```
+
+The default verification suite skips this single test when the URL is absent, so CI and local
+development do not silently substitute an in-memory implementation for an asserted real-Redis
+result.
+
+The Web console retains a Redis-free synchronous mode and adds an Async Job mode that renders
+the SSE lifecycle and can request cooperative cancellation. `compose.redis.yaml` binds Redis to
+loopback only and enables AOF; this is local-development infrastructure, not a production HA
+deployment.

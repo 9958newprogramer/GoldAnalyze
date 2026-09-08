@@ -56,7 +56,7 @@ def build_services(app_settings: Settings = settings) -> Services:
     redis_client = Redis.from_url(
         app_settings.redis_url,
         decode_responses=True,
-        protocol=2,
+        protocol=app_settings.redis_protocol,
         socket_connect_timeout=1,
         socket_timeout=2,
     )
