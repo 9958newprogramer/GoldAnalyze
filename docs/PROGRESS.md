@@ -21,7 +21,7 @@
 | v0.5-planner | 类型化 Bounded Planner 与计划轨迹 | 已验证，checkpoint `e9c16aa` | 四类意图计划正确；越权/乱序/超预算计划被拒；API/MCP 返回 Plan |
 | v0.6-mcp-client | MCP Client 与动态 Tool 目录 | 已验证 | 动态发现、Schema 指纹、命名空间、超时、健康状态均有集成测试 |
 | v0.7-approval | 风险分级与人工审批状态机 | 已验证 | allow/deny/review 完整闭环；审批不可伪造、过期或重复使用 |
-| v0.8-async | Redis Streams Worker 与 SSE 长任务 | 未开始 | 幂等、取消、超时、有限重试、Checkpoint 恢复和断线重连测试 |
+| v0.8-async | Redis Streams Worker 与 SSE 长任务 | 进行中 | 幂等、取消、超时、有限重试、Checkpoint 恢复和断线重连测试 |
 | v0.9-observability | OpenTelemetry 与运行指标 | 未开始 | HTTP→Agent→Tool→Store/Worker Trace 连通；关键指标可导出 |
 | v1.0-resume | 招聘展示与质量证据包 | 未开始 | 100+ Eval、CI、Docker、非金融 Skill、演示脚本、简历指标报告 |
 
@@ -178,11 +178,42 @@
 
 - 实现 v0.8 Redis Streams Worker、SSE 和持久化 Checkpoint，把长任务从同步请求生命周期中解耦。
 
+### v0.8a-async-contracts — 2026-09-08
+
+**完成内容**
+
+- 定义 `AgentJob`、`JobEvent`、`AgentCheckpoint` 版本化契约，明确 9 个运行状态和终态。
+- 新增 SQLite `JobRepository`，用 `BEGIN IMMEDIATE`、租约 owner 和条件更新实现创建、认领、取消、重试、终态提交、Event cursor、Checkpoint 与死信持久化。
+- 幂等键只保存 SHA-256；同键同请求返回原 Job，同键异请求 fail closed。
+- 新增真实 `redis.asyncio` Streams Adapter，覆盖 Consumer Group、`XREADGROUP`、`XACK` 与 `XAUTOCLAIM`；Stream 只携带不透明 Job ID。
+- 新增异步运行时边界和威胁模型文档 `docs/ASYNC_RUNTIME.md`。
+
+**关键优化与取舍**
+
+- SQLite 是业务状态真相源，Redis 只做 at-least-once 投递；避免依赖 Stream retention 还原业务状态，也便于 SSE 精确续传。
+- Worker 只有在持久化状态成功后才 ACK；崩溃消息留在 PEL，恢复 Worker 必须同时通过 Redis claim 和 SQLite 过期租约校验。
+- 取消先写入持久层；若它发生在 success commit 之前，终态 CAS 强制落为 cancelled，固定竞态语义。
+- 测试替身仅用于故障注入，生产 Adapter 已直接使用 `redis.asyncio`，不把内存队列包装成 Redis 能力。
+
+**验证证据**
+
+- `tests/test_job_storage.py` 与 `tests/test_job_broker.py`：9 个测试通过，覆盖幂等冲突/脱敏、双 Worker 竞争、取消竞态、单调 cursor、队列取消、Consumer Group、ACK、PEL reclaim 和初始化幂等。
+- `make verify`：Ruff check/format 通过，Pytest `80 passed`；Golden Set v5 `16/16`、score `100.0`。
+
+**已知限制**
+
+- 当前只完成持久化契约和 Redis 边界；Worker 调度、逐步骤恢复、HTTP/SSE 和 UI 尚未接入，因此 v0.8 仍为进行中。
+- 本机没有 Redis Server/Docker；当前 Redis 协议测试使用 fakeredis，v0.8 完成前需补可执行的 Redis 容器配置和真实服务 smoke test 说明。
+
+**下一步**
+
+- 实现 Worker 与 Agent 逐 Plan step Checkpoint 协议，然后接取消、超时、有限重试和死信。
+
 ## 当前工作区
 
 - 目标分支：`codex/resume-ready-agent-runtime`
-- 当前版本：`0.7.0`
-- 当前阶段：准备实现 `v0.8-async`
+- 当前版本：`0.7.0`（v0.8 开发中）
+- 当前阶段：`v0.8a` 已验证，准备创建 checkpoint；随后进入 `v0.8b`
 - 入口：`app/agent/orchestrator.py`
 - 数据契约：`app/models.py`
 - Skill Manifest：`skills/*/skill.json`
@@ -190,13 +221,12 @@
 
 ## 下一步：v0.8-async
 
-1. 定义 `AgentJob`、`JobEvent`、`Checkpoint` 与明确的 queued/running/waiting/cancelling/completed/failed 状态机，先固化存储契约。
-2. 使用 Redis Streams Consumer Group 投递和认领任务，HTTP 只创建 Job 并立即返回；同步 `/api/runs` 保留为兼容入口。
-3. Worker 以幂等键和原子状态转换执行任务，支持软取消、每阶段超时、可分类的有限重试和死信记录。
-4. 在每个确定性 Plan step 后保存 Checkpoint；进程重启或 pending message 回收时，从已完成步骤之后恢复而不是重放整个工作流。
-5. 提供带单调 event ID 的 SSE，支持 `Last-Event-ID` 断线续传、心跳和终态自动关闭。
-6. 覆盖重复提交、双 Worker 竞争、Worker 崩溃、取消竞态、超时、可重试/不可重试错误、Checkpoint 恢复与 SSE 重连测试。
-7. 更新演示 UI、架构文档和求职表达，完成验证后提交独立 Git checkpoint。
+1. Worker 以幂等键和原子状态转换执行任务，支持软取消、每阶段超时、可分类的有限重试和死信记录。
+2. 在每个确定性 Plan step 后保存 Checkpoint；进程重启或 pending message 回收时，从已完成步骤之后恢复而不是重放整个工作流。
+3. 使用 Redis Streams Consumer Group 投递和认领任务，HTTP 只创建 Job 并立即返回；同步 `/api/runs` 保留为兼容入口。
+4. 提供带单调 event ID 的 SSE，支持 `Last-Event-ID` 断线续传、心跳和终态自动关闭。
+5. 覆盖重复提交、双 Worker 竞争、Worker 崩溃、取消竞态、超时、可重试/不可重试错误、Checkpoint 恢复与 SSE 重连测试。
+6. 更新演示 UI、架构文档和求职表达，完成验证后提交独立 Git checkpoint。
 
 ## 中断恢复步骤
 

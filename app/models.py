@@ -15,6 +15,94 @@ class RunRequest(BaseModel):
     cache_policy: Literal["use", "refresh", "bypass"] = "use"
 
 
+JobStatus = Literal[
+    "queued",
+    "running",
+    "waiting_approval",
+    "cancelling",
+    "completed",
+    "failed",
+    "cancelled",
+    "timed_out",
+    "dead_letter",
+]
+
+
+class JobCreateRequest(RunRequest):
+    """Bounded payload accepted by the asynchronous control plane."""
+
+    max_attempts: int = Field(default=2, ge=1, le=3)
+
+
+class AgentJob(BaseModel):
+    """Durable job state; Redis messages contain only ``job_id``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    job_id: str = Field(pattern=r"^[a-f0-9]{16}$")
+    status: JobStatus
+    question: str = Field(min_length=4, max_length=1_000)
+    cache_policy: Literal["use", "refresh", "bypass"] = "use"
+    request_fingerprint: str = Field(pattern=r"^[a-f0-9]{64}$")
+    attempts: int = Field(default=0, ge=0, le=3)
+    max_attempts: int = Field(default=2, ge=1, le=3)
+    run_id: str | None = Field(default=None, pattern=r"^[a-f0-9]{12}$")
+    last_event_id: int = Field(default=0, ge=0)
+    cancel_requested: bool = False
+    error_code: str | None = Field(default=None, max_length=80)
+    error_message: str | None = Field(default=None, max_length=300)
+    created_at: datetime
+    updated_at: datetime
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+
+
+class JobEvent(BaseModel):
+    """Append-only event whose per-job id is also the SSE cursor."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    job_id: str = Field(pattern=r"^[a-f0-9]{16}$")
+    event_id: int = Field(ge=1)
+    event_type: Literal[
+        "job_queued",
+        "job_started",
+        "step_completed",
+        "approval_required",
+        "retry_scheduled",
+        "cancel_requested",
+        "job_completed",
+        "job_failed",
+        "job_cancelled",
+        "job_timed_out",
+        "dead_lettered",
+        "checkpoint_restored",
+    ]
+    status: JobStatus
+    message: str = Field(min_length=1, max_length=300)
+    data: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+
+
+class AgentCheckpoint(BaseModel):
+    """Trusted, versioned execution snapshot written after each completed Plan step."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["agent-checkpoint-v1"] = "agent-checkpoint-v1"
+    job_id: str = Field(pattern=r"^[a-f0-9]{16}$")
+    run_id: str = Field(pattern=r"^[a-f0-9]{12}$")
+    question_fingerprint: str = Field(pattern=r"^[a-f0-9]{64}$")
+    route: IntentDecision
+    plan_id: str = Field(pattern=r"^[a-f0-9]{12}$")
+    completed_steps: list[str] = Field(default_factory=list, max_length=32)
+    step_outputs: dict[str, Any] = Field(default_factory=dict)
+    events: list[AgentEvent] = Field(default_factory=list, max_length=64)
+    tool_audit: list[dict[str, Any]] = Field(default_factory=list, max_length=200)
+    created_at: datetime
+    updated_at: datetime
+
+
 class StrategySpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

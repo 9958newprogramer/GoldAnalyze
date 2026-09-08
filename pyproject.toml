@@ -16,6 +16,7 @@ dependencies = [
   "openai>=2,<3",
   "pydantic>=2.12,<3",
   "python-dotenv>=1.2,<2",
+  "redis>=7,<9",
   "uvicorn[standard]>=0.41,<1",
 ]
 
@@ -23,6 +24,7 @@ dependencies = [
 dev = [
   "pytest>=9,<10",
   "pytest-asyncio>=1,<2",
+  "fakeredis>=2.31,<3",
   "ruff>=0.13,<1",
 ]
 
