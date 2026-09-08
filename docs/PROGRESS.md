@@ -323,11 +323,42 @@
 
 **Git checkpoint**：`5c4d0af`
 
+### v1.0a-eval-ci — 2026-09-08
+
+**完成内容**
+
+- 将默认 Golden Set 升级为 `evals/golden.v6.jsonl`，共 108 条真实 Agent 执行案例：44 条策略、24 条行情、12 条外部研究、28 条其他意图。
+- 其中显式包含 16 条 Prompt Injection/破坏/Secret 泄露对抗拒绝、12 条人工审批恢复、8 条 Artifact exact-hit 复用，以及 34 条日线和 34 条小时线规格。
+- 新增数据集级 Coverage Contract：硬性检查 100—200 条、唯一 ID/问题、四类路由配额、日线/小时线配额、审批/缓存/对抗/边界/地域输入配额和标签一致性，阻止小样本或同义句灌水。
+- `EvalReport` 新增机器可读 `coverage`，CLI、API 和持久化报告可直接展示分布证据。
+- 首轮 108 条评测暴露 14 条失败，固化回归测试后修复了“10日与30日均线”共享单位参数、`1h/hourly` 后接中文字符、繁体研究词和“日K数据”路由等真实鲁棒性问题；没有删除难例。
+- 新增 GitHub Actions 质量门禁：Python 3.12 + Redis 8.2 Service 运行 `make verify`，含 Ruff、全量 Pytest、真实 Redis Consumer Group 集成测试和 108 条 Eval；权限为 `contents: read`，官方 Action 用完整 commit SHA 锁定。
+- 新增 `docs/EVALS.md`，记录数据集分布、双层门禁、CI 安全设置和真实性边界。
+
+**关键优化与取舍**
+
+- 保留确定性 Rubric 作为阻断性 CI Gate，不在无密钥 CI 中引入易漂移的 LLM-as-Judge。
+- v6 允许省略标准 `required_stages`，Loader 根据 Artifact/审批/缓存场景填充受信任的标准轨迹，降低 JSONL 重复噪声；非标准工作流仍可显式写入轨迹。
+- CI 不配置商业 LLM/Search 密钥，用可重复的规则降级和 Disabled Provider 验证 Runtime 契约，不将外部服务波动混入合并门禁。
+
+**验证证据**
+
+- 失败基线：首轮 v6 Eval `94/108`、score `94.83`，确认难例能真实发现问题。
+- 最终命令：`make verify && .venv/bin/python -m pip check && git diff --check && test "$(wc -l < evals/golden.v6.jsonl | tr -d ' ')" = "108"`。
+- 最终结果：Ruff 通过，Pytest `109 passed, 1 skipped`，v6 Eval `108/108`、score `100.00`，依赖无冲突，diff 无空白问题，JSONL 物理行数 108。
+
+**已知限制**
+
+- 本机没有 `redis-server` 或 Docker，因此本地 Pytest 的唯一 skip 是真实 Redis 集成测试；CI 已提供 Redis Service 使其可执行，但当前本地仓库未配置远程，不声称已有远程绿色运行记录。
+- v6 是可审计基线，不等于穷尽所有自然语言表达；新回归需追加到新版数据集，不原地改写 v6。
+
+**Git checkpoint**：`3311f84`
+
 ## 当前工作区
 
 - 目标分支：`codex/resume-ready-agent-runtime`
-- 当前版本：`0.9.0`
-- 当前阶段：`v0.9` 已验证；下一阶段为 `v1.0-resume`
+- 当前版本：`0.9.0` + `v1.0a`
+- 当前阶段：`v1.0a-eval-ci` 已验证；下一阶段为 `v1.0b-non-financial-skill`
 - 入口：`app/agent/orchestrator.py`
 - 数据契约：`app/models.py`
 - Skill Manifest：`skills/*/skill.json`
@@ -335,10 +366,9 @@
 
 ## 下一步：v1.0-resume
 
-1. 将 Golden Set 扩充到 100+，覆盖多意图、边界参数、Prompt Injection、MCP、审批、幂等、恢复和观测隐私；生成可复现指标报告。
-2. 配置 CI 与完整 Docker Compose/healthcheck，使 lint、tests、100+ Eval 成为合并门禁。
-3. 增加一个真正经 Router→Skill→Plan→Tool→Artifact 的非金融工作流，证明 Runtime 可迁移性。
-4. 完成一键演示脚本、架构图、面试讲解、最终简历四条与真实性边界。
+1. 增加一个真正经 Router→Skill→Plan→Tool→Artifact 的非金融工作流，证明 Runtime 可迁移性。
+2. 补齐完整 Docker Compose/healthcheck，并生成可复现指标报告。
+3. 完成一键演示脚本、架构图、面试讲解、最终简历四条与真实性边界。
 
 ## 中断恢复步骤
 
