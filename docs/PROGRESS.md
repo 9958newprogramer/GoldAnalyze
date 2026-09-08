@@ -22,7 +22,7 @@
 | v0.6-mcp-client | MCP Client 与动态 Tool 目录 | 已验证，checkpoint `3af3173` | 动态发现、Schema 指纹、命名空间、超时、健康状态均有集成测试 |
 | v0.7-approval | 风险分级与人工审批状态机 | 已验证，checkpoint `975d98d` | allow/deny/review 完整闭环；审批不可伪造、过期或重复使用 |
 | v0.8-async | Redis Streams Worker 与 SSE 长任务 | 已验证，checkpoint `4f5206f` | 幂等、取消、超时、有限重试、Checkpoint 恢复和断线重连测试；真实 Redis smoke 与浏览器闭环通过 |
-| v0.9-observability | OpenTelemetry 与运行指标 | 未开始 | HTTP→Agent→Tool→Store/Worker Trace 连通；关键指标可导出 |
+| v0.9-observability | OpenTelemetry 与运行指标 | 已验证，checkpoint `5c4d0af` | HTTP→Agent→Plan→Tool→Store 与 Job Producer/Consumer Trace 连通；OTLP Trace/Metrics 可导出 |
 | v1.0-resume | 招聘展示与质量证据包 | 未开始 | 100+ Eval、CI、Docker、非金融 Skill、演示脚本、简历指标报告 |
 
 状态只能使用：`未开始`、`进行中`、`已验证`、`阻塞`。不能因为代码已写就标记“已验证”。
@@ -35,7 +35,7 @@
 | MCP Server/Client + 动态发现 | Agent MCP Server；进程内/stdio Client；namespaced Catalog；Schema Pin、超时、健康与治理集成测试 | 尚无远程 HTTP/OAuth；默认远端 Tool 尚未进入业务 Skill |
 | Tool Governance + 人工审批 | Tool effect/risk、most-restrictive allow/deny/review；hash-only 一次性凭证；Run/Plan/Step/Tool/参数绑定；Web/API/MCP 恢复；攻击、过期、重放与并发测试 | 当前仅为本地单用户控制面；尚无企业身份认证、RBAC 与多租户隔离 |
 | Redis Worker + SSE + 恢复 | Redis Streams Consumer Group、双重租约、有限重试/死信、软取消、步骤超时、JSON Checkpoint、SSE 续传与异步 HITL；96 tests + 真实 Redis smoke + 浏览器证据 | 当前为单节点 SQLite 事件轮询；尚无多租户鉴权、Redis HA 与跨节点 SSE fan-out |
-| OpenTelemetry | 无 | 整项待实现 |
+| OpenTelemetry | HTTP/Agent/Plan/Step/Tool/Store/Job/Checkpoint 手工插桩；W3C 上下文跨 Worker；有界本地证据、OTLP、Jaeger/Prometheus 配置；101 tests + 浏览器证据 | Collector/Jaeger Compose 因本机无 Docker 未实际启动；生产告警、SLO 与长期后端留待部署环境 |
 | Artifact Memory + Agent Eval | 两级复用、TTL/版本失效、16 条 v5 Golden Set，Eval 校验 Plan/Event 及审批审计链一致性 | 需扩充至 100+、接入 CI 并补对抗覆盖 |
 
 ## 已验证版本记录
@@ -283,21 +283,62 @@
 
 **Git checkpoint**：`4f5206f`
 
+### v0.9-observability — 2026-09-08
+
+**完成内容**
+
+- 新增独立 `Telemetry` Runtime，使用 OpenTelemetry Python API/SDK 手工插桩 HTTP Server、Agent Run、Router、Planner、Plan step、Tool Governance/Execution、Artifact/Run Store、Job producer/consumer 与 Checkpoint。
+- 异步提交在 `aurumlab.job.submit` Producer Span 内注入 W3C `traceparent/tracestate`，只持久化到 SQLite 控制面；Worker 提取后创建 `aurumlab.job.process` Consumer Span，Redis Stream 继续只携带 opaque Job ID。
+- 建立 HTTP/Agent/Plan/Tool/Job/Checkpoint Counter 与 Histogram；Metric label 只使用 FastAPI 路由模板、注册 Tool、Manifest step 和状态枚举，随机 404 路径统一归为 `{unmatched}`。
+- 提供 `memory / console / otlp / none` exporter；本地 Span ring buffer 最多 500 条，`GET /api/observability` 最多返回 200 条脱敏证据，HTTP 响应通过 `X-Trace-Id` 关联。
+- Web 增加 OpenTelemetry Runtime 与当前 Trace Span 面板；新增固定版本 Jaeger 2.20.0、OpenTelemetry Collector Contrib 0.160.0 和 Prometheus scrape endpoint Compose 配置。
+- 新增 `docs/OBSERVABILITY.md`，明确 Span 拓扑、指标名、异步传播、隐私/高基数边界、OTLP 与本地运行方式。
+
+**关键优化与取舍**
+
+- 不使用自动全量采集替代业务插桩：关键 Span 与 Metric 直接对应 Agent 决策和恢复语义，面试时可以解释每一层的父子关系。
+- 观测数据禁止 Prompt、Tool 参数/结果、URL、SQL、异常消息、API Key、审批 token 与 baggage；异常仅记录受控 `error.type`。
+- `memory` exporter 是有硬上限的本地证据面；`otlp` 会同时保留有界本地快照并导出，方便 API/Worker 多进程接入统一 Collector。
+- Trace Context 存在 SQLite 而非 Redis，在维持跨进程因果关系的同时保持队列数据面最小化；Trace ID 仅用于定位，不作为授权依据。
+- Jaeger 只负责 Trace，Collector 将 Metrics 暴露为 Prometheus scrape endpoint，避免错误地把 Metrics 直接发送给只接收 Trace 的 Jaeger API。
+
+**验证证据**
+
+- `make verify`：Ruff check/format 通过，Pytest `101 passed, 1 skipped`；Golden Set v5 `16/16`、score `100.0`。
+- `.venv/bin/python -m pip check`：`No broken requirements found`。
+- OTLP 定向测试使用真实 `OTLPSpanExporter` / `OTLPMetricExporter` 向本地 HTTP receiver 发送 protobuf，`/v1/traces` 与 `/v1/metrics` 均收到非空 `application/x-protobuf`，再次独立执行 `1 passed`。
+- 端到端测试证明 HTTP→Job Producer→Job Consumer→Agent→Checkpoint 共享 Trace ID，Consumer 的 parent span 为 Producer；同时断言 Redis entry 只有 `job_id`，公开 Job 不暴露 `traceparent`。
+- 隐私/高基数测试证明 Prompt sentinel、baggage、token 和随机 404 path 不进入 snapshot；本地 ring buffer 与 Metric 维度长度超限会被约束。
+- 浏览器真实 API：页面显示 `API v0.9.0`、`memory · aurumlab`，同步行情 Run 展示同一 Trace 下 10 个 HTTP/Agent/Route/Plan/Tool/Store Span；浏览器 warning/error 日志为空。
+
+**已知限制**
+
+- 本机没有 Docker；Collector 90MB 官方二进制下载速度约 30KB/s，预计近一小时，已停止低价值等待。因此 Compose 结构与版本由测试验证，真实 OTLP protobuf 已验证，但没有本机 Jaeger UI 启动证据。
+- 默认本地 evidence 只展示当前进程 Span；API/Worker 跨进程汇总需要两边都设置 `OTEL_EXPORTER=otlp` 并连接 Collector。
+- 当前没有生产告警规则、SLO、Tail Sampling 和长期 Trace/Metric 存储；这些属于部署运维扩展，不冒充已完成能力。
+
+**下一步**
+
+- 进入 v1.0-resume：扩充 100+ Golden Set/对抗案例并接入 CI，补完整 Docker、非金融 Skill、演示脚本和最终简历指标报告。
+
+**Git checkpoint**：`5c4d0af`
+
 ## 当前工作区
 
 - 目标分支：`codex/resume-ready-agent-runtime`
-- 当前版本：`0.8.0`
-- 当前阶段：`v0.8` 已验证；下一阶段为 `v0.9-observability`
+- 当前版本：`0.9.0`
+- 当前阶段：`v0.9` 已验证；下一阶段为 `v1.0-resume`
 - 入口：`app/agent/orchestrator.py`
 - 数据契约：`app/models.py`
 - Skill Manifest：`skills/*/skill.json`
 - 验证命令：`make verify && .venv/bin/aurumlab-eval --json`
 
-## 下一步：v0.9-observability
+## 下一步：v1.0-resume
 
-1. 定义 Trace/Metric 命名、低基数字段和隐私边界，选择 OTLP + Console/In-memory 验证链路。
-2. 为 HTTP、Agent Run、Async Job、Worker attempt、Plan step、Tool authorization/execution、Store 与 Checkpoint 增加关联 Span。
-3. 增加端到端 Trace 测试、运行指标导出、可演示查询方式和 v0.9 Git checkpoint。
+1. 将 Golden Set 扩充到 100+，覆盖多意图、边界参数、Prompt Injection、MCP、审批、幂等、恢复和观测隐私；生成可复现指标报告。
+2. 配置 CI 与完整 Docker Compose/healthcheck，使 lint、tests、100+ Eval 成为合并门禁。
+3. 增加一个真正经 Router→Skill→Plan→Tool→Artifact 的非金融工作流，证明 Runtime 可迁移性。
+4. 完成一键演示脚本、架构图、面试讲解、最终简历四条与真实性边界。
 
 ## 中断恢复步骤
 
