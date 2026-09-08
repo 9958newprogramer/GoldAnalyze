@@ -4,7 +4,7 @@ AurumLab 是一个**面向 Agent 开发求职**的可运行作品集项目。黄
 
 > 只做研究与历史实验，不连接实盘，不执行用户提供的 Python、SQL 或 Shell，不构成投资建议。
 
-## v0.6 已实现的闭环
+## v0.7 已实现的闭环
 
 ```mermaid
 flowchart LR
@@ -24,7 +24,13 @@ flowchart LR
     E --> I[Per-Skill Tool Policy]
     S[MCP Client] --> T[动态 Tool Catalog<br/>Namespace + Schema Pin]
     T --> I
-    I --> F[策略回测 / 行情查询 / 外部研究 / 直接回答]
+    I --> G{allow / deny / review}
+    G -->|deny| R
+    G -->|review| H[暂停 Run + 人工审批]
+    H -->|deny / expire| R
+    H -->|one-time grant| O[原子消费凭证]
+    O --> F
+    G -->|allow| F[策略回测 / 行情查询 / 外部研究 / 直接回答]
     F --> J[结构化结果 + Trace + Audit]
     X & J --> K[SQLite 持久化 + Provenance]
 ```
@@ -36,7 +42,7 @@ flowchart LR
 | `external_research` | `external-research` | ExternalResearchSpec、带 URL 的 Sources | 2 |
 | `other` | `general-response` | 能力边界内的直接回答 | 1 |
 
-危险指令会在 LLM、Skill 和 Tool 执行前拒绝，并记录 `route_intent → policy_reject`。允许执行的任务为每次 Tool 授权与执行生成审计记录，但不记录 API Key 或完整 Tool 参数。模型只能返回类型化意图，`intent → skill` 映射由服务端代码控制。
+危险指令会在 LLM、Skill 和 Tool 执行前拒绝，并记录 `route_intent → policy_reject`。允许执行的任务为每次 Tool 授权与执行生成审计记录，但不记录 API Key、审批凭证或完整 Tool 参数。模型只能返回类型化意图，`intent → skill` 映射由服务端代码控制。
 
 ## Bounded Planner
 
@@ -51,6 +57,31 @@ API、MCP 和 Web UI 均返回同一个 Plan，包括已完成、跳过和失败
 所有 JSON Schema 使用 Draft 2020-12 校验并生成 16 位稳定指纹。首次发现后自动 pin；同名 Tool 的 Schema 漂移、命名冲突、外部 `$ref`、未知参数、超时、过大输入输出以及 Tool 描述/结果中的 Prompt Injection 都会 fail closed。刷新失败时保留 last-known-good Catalog，并把 Server 标记为 `degraded`；连接失败只隔离对应 Server，不阻断主 Agent。
 
 `GET /api/mcp/catalog` 可查看 Server 健康、协议/实现版本、命名空间、Tool Schema 和指纹。默认 Provider 只提供运行时能力描述与文本结构统计，用来证明 MCP 和治理架构可迁移到非金融场景，不参与黄金计算。
+
+## Tool Governance 与人工审批
+
+每个 Tool 注册时必须声明 `read / external / write / privileged` effect、`low / medium / high` risk、来源及是否强制审批。Policy 按最严格规则决策：越出 Skill Allowlist 或 privileged effect 直接 deny；external/write、high risk 或显式审批进入 review；其余才 allow。review 不会调用 Tool，也不会提前扣减调用预算。
+
+外部检索会返回 `pending_approval`，Plan 将目标步骤标记为 `paused_step`。本地控制面批准后签发一次性 bearer token，凭证绑定 Run、Plan、Step、Tool、参数摘要和风险；数据库只保存 token hash，并在目标 Tool 调用前用 SQLite 原子状态转换消费。伪造、过期、跨任务、参数篡改、重放和并发双消费均拒绝。
+
+```bash
+# 1. 创建外部研究 Run，读取响应中的 run_id / approval_id
+curl -s http://127.0.0.1:8010/api/runs \
+  -H 'Content-Type: application/json' \
+  -d '{"question":"搜索互联网最新黄金新闻。","cache_policy":"bypass"}'
+
+# 2. 显式批准。原始 token 只在这一次响应中出现
+curl -s -X POST \
+  http://127.0.0.1:8010/api/runs/RUN_ID/approvals/APPROVAL_ID/approve \
+  -H 'X-AurumLab-Approval-Intent: approve'
+
+# 3. 用一次性 token 恢复；重复调用将被拒绝
+curl -s -X POST http://127.0.0.1:8010/api/runs/RUN_ID/resume \
+  -H 'Content-Type: application/json' \
+  -d '{"approval_token":"ONE_TIME_TOKEN"}'
+```
+
+Web UI 支持批准并恢复或拒绝；MCP Server 只提供凭证恢复，不提供自批准 Tool。这是本地单用户演示，不宣称具备企业身份认证。完整状态机、威胁模型和边界见 [`docs/APPROVALS.md`](docs/APPROVALS.md)。
 
 ## 立即运行
 
@@ -117,7 +148,7 @@ Qwen/SiliconFlow 等提供 `enable_thinking` 扩展的模型可将最后一项�
 
 ## 外部检索
 
-外部知识 Skill 使用可替换的 `SearchProvider` 协议，当前适配 Tavily。未配置时会明确返回“未执行真实检索”，不会用模型内部知识冒充联网结果。
+外部知识 Skill 使用可替换的 `SearchProvider` 协议，当前适配 Tavily。每次真实外部调用都需人工审批；未配置时仍演示相同审批链，并明确返回“未执行真实检索”，不会用模型内部知识冒充联网结果。
 
 ```bash
 cp .env.example .env
@@ -132,13 +163,13 @@ Provider 使用 HTTPS、8 秒超时、禁止自动重定向、最多 10 个结�
 
 ## Agent Eval 质量门禁
 
-[`evals/golden.v4.jsonl`](evals/golden.v4.jsonl) 包含 16 个案例，覆盖四类意图、日线/小时线参数、“1小时K”回归、行情查询、外部检索降级、繁体输入、Prompt Injection 拒绝和重复任务复用，并校验 Plan 与 Event 执行轨迹一致。
+[`evals/golden.v5.jsonl`](evals/golden.v5.jsonl) 包含 16 个案例，覆盖四类意图、日线/小时线参数、“1小时K”回归、行情查询、外部检索审批、繁体输入、Prompt Injection 拒绝和重复任务复用，并校验 Plan/Event 轨迹与 `review → consume → execute` 审计链一致。
 
 | 维度 | 权重 | 检查内容 |
 |---|---:|---|
 | Task Accuracy | 40% | 意图、Skill、类型化任务规格是否正确 |
 | Workflow Integrity | 20% | 状态、阶段顺序和 Event 是否完整 |
-| Safety Compliance | 20% | 预检拒绝、Allowlist、Tool Budget 和 Audit 是否成立 |
+| Safety Compliance | 20% | 预检拒绝、Allowlist、Tool Budget、审批绑定和 Audit 是否成立 |
 | Output Completeness | 10% | 对应意图的结构化产物和摘要是否齐全 |
 | Reuse Efficiency | 10% | 缓存来源、执行模式和 Tool 调用节省是否真实 |
 
@@ -155,6 +186,7 @@ MCP 与 HTTP API 复用同一个 Agent、Skill Registry 和 Run Store：
 
 - Tool：`handle_agent_request`（四类意图的统一入口）
 - Tool：`analyze_gold_strategy`（向后兼容别名）
+- Tool：`resume_agent_run`（使用由 HTTP 控制面签发的一次性审批凭证恢复 Run）
 - Tool：`list_aurumlab_skills`
 - Resource：`aurum://skills`
 - Resource：`aurum://skills/backtest-strategy`
@@ -211,6 +243,7 @@ app/
   agent/          # Intent Router、任务编译、Orchestrator
   domain/         # 行情适配器与确定性回测
   evals/          # Golden Set、Rubric、Runner、CLI
+  approval.py     # HITL 状态机、参数绑定与一次性凭证
   memory.py       # 任务指纹、相似度、SQLite Artifact Cache
   mcp_client.py   # MCP 会话、动态 Catalog、Schema Pin、治理适配
   mcp_provider.py # 独立非金融 MCP Tool Provider
@@ -220,11 +253,11 @@ app/
   main.py         # FastAPI
   mcp_server.py   # Agent MCP Tools / Resources
 skills/           # 4 个版本化 Skill 包
-evals/            # v1—v4 版本化评测集
+evals/            # v1—v5 版本化评测集
 tests/
 docs/
 ```
 
-v0.6 已实现 MCP Client、动态 Tool 发现、Schema Pin 和远端 Tool 治理适配；v0.7 将增加 allow/deny/review 风险策略与不可重放的人工审批凭证。详见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)、[`docs/MCP_CLIENT.md`](docs/MCP_CLIENT.md)、[`docs/ARTIFACT_MEMORY.md`](docs/ARTIFACT_MEMORY.md) 与 [`docs/RESUME.md`](docs/RESUME.md)。
+v0.7 已实现 allow/deny/review 风险策略与不可重放的人工审批凭证；v0.8 将引入 Redis Streams Worker、SSE 和持久化 Checkpoint。详见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)、[`docs/APPROVALS.md`](docs/APPROVALS.md)、[`docs/MCP_CLIENT.md`](docs/MCP_CLIENT.md)、[`docs/ARTIFACT_MEMORY.md`](docs/ARTIFACT_MEMORY.md) 与 [`docs/RESUME.md`](docs/RESUME.md)。
 
 持续迭代的当前状态、验收证据、下一步和掉线恢复方式，以 [`docs/PROGRESS.md`](docs/PROGRESS.md) 为唯一进度真相源。

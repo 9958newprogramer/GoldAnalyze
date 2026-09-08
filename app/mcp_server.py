@@ -46,6 +46,16 @@ async def analyze_gold_strategy(question: str) -> RunResponse:
 
 
 @mcp.tool(structured_output=True)
+async def resume_agent_run(run_id: str, approval_token: str) -> RunResponse:
+    """Resume a paused run with a one-time grant issued by the HTTP approval control plane."""
+    if len(run_id) != 12 or any(character not in "0123456789abcdef" for character in run_id):
+        raise ValueError("invalid run id")
+    if not 50 <= len(approval_token) <= 200:
+        raise ValueError("invalid approval token")
+    return await services.agent.resume(run_id, approval_token)
+
+
+@mcp.tool(structured_output=True)
 def list_aurumlab_skills() -> SkillListResponse:
     """List versioned Skills available to the AurumLab Agent."""
     return SkillListResponse(skills=services.skills.list())

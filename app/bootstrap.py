@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from app.agent.interpreter import build_interpreter
 from app.agent.orchestrator import AurumAgent
 from app.agent.router import build_intent_router
+from app.approval import ApprovalRepository
 from app.config import Settings, settings
 from app.domain.market_data import build_market_repository
 from app.evals.runner import EvalRunner
@@ -24,6 +25,7 @@ class Services:
     skills: SkillRegistry
     runs: RunRepository
     artifacts: ArtifactCache
+    approvals: ApprovalRepository
     eval_reports: EvalReportRepository
     agent: AurumAgent
     evaluator: EvalRunner
@@ -40,6 +42,10 @@ def build_services(app_settings: Settings = settings) -> Services:
         semantic_threshold=app_settings.cache_semantic_threshold,
         max_entries=app_settings.artifact_cache_max_entries,
     )
+    approvals = ApprovalRepository(
+        app_settings.resolved_app_database_path,
+        ttl_seconds=app_settings.approval_ttl_seconds,
+    )
     agent = AurumAgent(
         interpreter=build_interpreter(app_settings),
         market_repository=build_market_repository(app_settings),
@@ -47,6 +53,7 @@ def build_services(app_settings: Settings = settings) -> Services:
         skills=skills,
         runs=runs,
         artifacts=artifacts,
+        approvals=approvals,
         router=build_intent_router(app_settings),
         market_cache_ttl_seconds=app_settings.market_cache_ttl_seconds,
         research_cache_ttl_seconds=app_settings.research_cache_ttl_seconds,
@@ -69,6 +76,7 @@ def build_services(app_settings: Settings = settings) -> Services:
         skills=skills,
         runs=runs,
         artifacts=artifacts,
+        approvals=approvals,
         eval_reports=eval_reports,
         agent=agent,
         evaluator=evaluator,

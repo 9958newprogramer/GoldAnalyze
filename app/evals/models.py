@@ -23,7 +23,8 @@ class EvalCase(BaseModel):
     ]
     expected_artifact: Literal["backtest", "market", "research", "general", "rejected"]
     expected_spec: dict[str, Any] = Field(default_factory=dict)
-    expected_status: Literal["completed", "failed", "rejected"] = "completed"
+    expected_status: Literal["completed", "failed", "rejected", "pending_approval"] = "completed"
+    approval_scenario: Literal["none", "approve"] = "none"
     cache_scenario: Literal["bypass", "exact_hit"] = "bypass"
     expected_cache_status: Literal["bypass", "exact_hit"] = "bypass"
     required_stages: list[str]

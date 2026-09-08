@@ -6,6 +6,7 @@ from mcp.client.stdio import StdioServerParameters
 from mcp.server import MCPServer
 from pydantic import BaseModel
 
+from app.approval import ApprovalRepository, ApprovalRequired
 from app.mcp_client import (
     MCPClientManager,
     MCPSchemaDriftError,
@@ -74,33 +75,66 @@ async def test_dynamic_discovery_builds_namespaced_schema_pinned_catalog():
     assert manager.snapshot().servers[0].status == "disconnected"
 
 
-async def test_remote_tool_runs_through_existing_allowlist_budget_and_audit_gateway():
+async def test_remote_tool_runs_through_existing_allowlist_budget_and_audit_gateway(tmp_path):
     calls = {"calls": 0}
     manager = _manager(_echo_server(calls))
     registry = ToolRegistry()
     try:
         await manager.start()
         assert manager.register_tools(registry) == ["mcp__test__echo"]
+        approvals = ApprovalRepository(tmp_path / "approvals.db")
+        policy = ToolPolicy(
+            policy_name="remote-echo-skill@1.0.0",
+            allowed_tools={"mcp__test__echo"},
+            max_calls=1,
+        )
         gateway = ToolGateway(
             registry,
-            ToolPolicy(
-                policy_name="remote-echo-skill@1.0.0",
-                allowed_tools={"mcp__test__echo"},
-                max_calls=1,
-            ),
+            policy,
+            approvals=approvals,
+            run_id="a" * 12,
+            plan_id="b" * 12,
         )
 
-        result = await gateway.call("mcp__test__echo", text="bounded payload")
+        with pytest.raises(ApprovalRequired) as required:
+            await gateway.call("mcp__test__echo", text="bounded payload")
+        assert calls["calls"] == 0
+        assert policy.calls == 0
+
+        grant = approvals.approve(
+            required.value.approval.approval_id,
+            decided_by="test-operator",
+        )
+        approved_policy = ToolPolicy(
+            policy_name="remote-echo-skill@1.0.0",
+            allowed_tools={"mcp__test__echo"},
+            max_calls=1,
+            audit_log=list(policy.audit_log),
+        )
+        approved_gateway = ToolGateway(
+            registry,
+            approved_policy,
+            approvals=approvals,
+            run_id="a" * 12,
+            plan_id="b" * 12,
+            approval_token=grant.approval_token,
+        )
+        result = await approved_gateway.call("mcp__test__echo", text="bounded payload")
 
         assert result == {"text": "bounded payload"}
         assert calls["calls"] == 1
-        assert [entry["phase"] for entry in gateway.policy.audit_log] == [
+        assert [entry["phase"] for entry in approved_policy.audit_log] == [
+            "authorization",
             "authorization",
             "execution",
         ]
-        assert gateway.policy.audit_log[-1]["outcome"] == "completed"
+        assert [entry["decision"] for entry in approved_policy.audit_log[:2]] == [
+            "review",
+            "allow",
+        ]
+        assert approved_policy.audit_log[-1]["outcome"] == "completed"
         with pytest.raises(PermissionError, match="预算已耗尽"):
-            await gateway.call("mcp__test__echo", text="second call")
+            await approved_gateway.call("mcp__test__echo", text="second call")
         assert calls["calls"] == 1
     finally:
         await manager.stop()

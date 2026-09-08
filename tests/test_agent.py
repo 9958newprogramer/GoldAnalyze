@@ -129,7 +129,21 @@ async def test_agent_external_research_preserves_sources(tmp_path):
     services = build_services(Settings(app_database_path=str(tmp_path / "runs.db")))
     services.agent.search_provider = FakeSearchProvider()
 
-    response = await services.agent.run("搜索互联网最新黄金新闻。")
+    pending = await services.agent.run("搜索互联网最新黄金新闻。")
+
+    assert pending.status == "pending_approval"
+    assert pending.approval is not None and pending.approval.status == "pending"
+    assert pending.plan is not None
+    assert pending.plan.paused_step == "search_external_knowledge"
+    assert pending.plan.completed_steps == ["compile_research_query", "cache_lookup"]
+    assert pending.tool_audit[-1]["decision"] == "review"
+    assert pending.tool_audit[-1]["risk"] == "medium"
+
+    grant = services.approvals.approve(
+        pending.approval.approval_id,
+        decided_by="test-operator",
+    )
+    response = await services.agent.resume(pending.run_id, grant.approval_token)
 
     assert response.status == "completed"
     assert response.route is not None
@@ -137,7 +151,21 @@ async def test_agent_external_research_preserves_sources(tmp_path):
     assert response.research_result is not None
     assert response.research_result.provider == "fake-search"
     assert response.research_result.sources[0].url == "https://example.com/gold"
-    assert len(response.tool_audit) == 4
+    assert response.approval is not None and response.approval.status == "consumed"
+    assert [event.stage for event in response.events] == [
+        "route_intent",
+        "select_skill",
+        "build_plan",
+        "compile_research_query",
+        "cache_lookup",
+        "approval_resume",
+        "search_external_knowledge",
+        "summarize_external_research",
+    ]
+    assert len(response.tool_audit) == 5
+    assert [
+        item["decision"] for item in response.tool_audit if item["phase"] == "authorization"
+    ] == ["review", "allow", "allow"]
 
 
 async def test_policy_denies_non_allowlisted_tool(tmp_path):

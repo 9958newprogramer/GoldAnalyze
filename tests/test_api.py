@@ -79,10 +79,99 @@ def test_eval_api_runs_versioned_quality_gate():
     assert len(cases.json()) == 16
     assert response.status_code == 200
     payload = response.json()
-    assert payload["dataset_version"] == "v4"
+    assert payload["dataset_version"] == "v5"
     assert payload["passed"] is True
     assert payload["score"] == 100
     assert payload["passed_cases"] == payload["total_cases"] == 16
+
+
+def test_external_tool_requires_explicit_one_time_approval():
+    pending_response = client.post(
+        "/api/runs",
+        json={
+            "question": "搜索互联网最新黄金新闻并返回可靠来源。",
+            "cache_policy": "bypass",
+        },
+    )
+
+    assert pending_response.status_code == 200
+    pending = pending_response.json()
+    approval = pending["approval"]
+    assert pending["status"] == "pending_approval"
+    assert pending["plan"]["paused_step"] == "search_external_knowledge"
+    assert pending["events"][-1]["stage"] == "approval_required"
+    assert pending["tool_audit"][-1]["decision"] == "review"
+    assert "approval_token" not in pending_response.text
+
+    approval_path = f"/api/runs/{pending['run_id']}/approvals/{approval['approval_id']}"
+    assert client.post(f"{approval_path}/approve").status_code == 422
+    assert (
+        client.post(
+            f"{approval_path}/approve",
+            headers={"X-AurumLab-Approval-Intent": "deny"},
+        ).status_code
+        == 403
+    )
+
+    grant_response = client.post(
+        f"{approval_path}/approve",
+        headers={"X-AurumLab-Approval-Intent": "approve"},
+    )
+    assert grant_response.status_code == 200
+    token = grant_response.json()["approval_token"]
+    forged = f"{approval['approval_id']}.{'x' * 43}"
+    assert (
+        client.post(
+            f"/api/runs/{pending['run_id']}/resume",
+            json={"approval_token": forged},
+        ).status_code
+        == 403
+    )
+
+    resumed_response = client.post(
+        f"/api/runs/{pending['run_id']}/resume",
+        json={"approval_token": token},
+    )
+    assert resumed_response.status_code == 200
+    resumed = resumed_response.json()
+    assert resumed["status"] == "completed"
+    assert resumed["approval"]["status"] == "consumed"
+    assert "approval_resume" in [event["stage"] for event in resumed["events"]]
+    assert len([item for item in resumed["tool_audit"] if item["phase"] == "execution"]) == 2
+    assert token not in resumed_response.text
+    assert (
+        client.post(
+            f"/api/runs/{pending['run_id']}/resume",
+            json={"approval_token": token},
+        ).status_code
+        == 409
+    )
+
+
+def test_operator_can_deny_pending_external_tool_without_execution():
+    pending = client.post(
+        "/api/runs",
+        json={
+            "question": "搜索互联网资料：黄金与实际利率的关系。",
+            "cache_policy": "bypass",
+        },
+    ).json()
+    approval = pending["approval"]
+
+    denied_response = client.post(
+        f"/api/runs/{pending['run_id']}/approvals/{approval['approval_id']}/deny",
+        headers={"X-AurumLab-Approval-Intent": "deny"},
+    )
+
+    assert denied_response.status_code == 200
+    denied = denied_response.json()
+    assert denied["status"] == "rejected"
+    assert denied["approval"]["status"] == "denied"
+    assert denied["plan"]["paused_step"] is None
+    assert denied["plan"]["rejected_step"] == "search_external_knowledge"
+    assert denied["plan"]["skipped_steps"] == ["summarize_external_research"]
+    assert denied["events"][-1]["stage"] == "approval_denied"
+    assert not [item for item in denied["tool_audit"] if item["phase"] == "execution"]
 
 
 def test_cache_stats_api_is_observable():

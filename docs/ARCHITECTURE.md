@@ -8,7 +8,7 @@ AurumLab 的主语是 Agent 工程，不是黄金策略：
 
 这与 AgentForge 形成互补：AgentForge 重点展示 Agentic RAG 和知识库工作流；AurumLab 重点展示意图路由、Skill/MCP、工具治理、确定性任务执行、降级策略和自动评测。
 
-## v0.6 运行架构
+## v0.7 运行架构
 
 ```text
 Web / HTTP / MCP
@@ -32,7 +32,9 @@ Web / HTTP / MCP
         │       ├── tools/list → namespaced Tool Catalog
         │       ├── JSON Schema validation + fingerprint pin
         │       └── health / timeout / last-known-good isolation
-        └── ToolGateway: request memory → authorize → execute → audit
+        ├── ApprovalRepository: pending → approved/denied/expired → consumed
+        │       └── one-time token hash + run/plan/step/tool/args binding
+        └── ToolGateway: evaluate → allow/deny/review → execute → audit
                 ├── deterministic backtest tools
                 ├── read-only market query tools
                 ├── bounded SearchProvider
@@ -68,22 +70,28 @@ MCP Client 通过进程内或 stdio transport 动态执行 `tools/list`，但发
 
 当前 Server Binding 由部署方提供，不允许用户 Prompt 指定命令或 URL；暂不开放远程 HTTP，避免在尚无认证、SSRF 防护与 OAuth Scope 时扩大攻击面。详细约束见 [`MCP_CLIENT.md`](MCP_CLIENT.md)。
 
-### 6. 不执行模型生成代码
+### 6. review 是执行状态，不是提示文本
+
+Tool 注册时必须声明 effect、risk、来源和审批要求。Policy 使用 most-restrictive-wins：越出 Allowlist 或 privileged effect 直接 deny；external/write、high risk 或显式标记进入 review。review 会持久化 token-free `ApprovalRequest`、暂停 Plan，并在任何副作用或预算扣减前结束当前执行。
+
+批准只签发一次原始 token，数据库保存 hash；凭证绑定 Run、Plan、Step、Tool、参数摘要、effect/risk 和 TTL。恢复时校验稳定 Plan ID，到达同一个 Tool 调用后原子消费，防止伪造、篡改、跨任务使用、重放和并发双消费。MCP 可以使用外部控制面签发的凭证恢复，但不能自批准。详见 [`APPROVALS.md`](APPROVALS.md)。
+
+### 7. 不执行模型生成代码
 
 用户输入和模型输出都不可信。AurumLab 只接受 Pydantic 任务规格，领域层执行固定函数；SQLite 行情库只读、参数化查询，标识符经过校验。这样每次 Run 都可测试、比较和持久化。
 
-### 7. 暂不使用 LangGraph
+### 8. 暂不使用 LangGraph
 
-AgentForge 已展示 LangGraph。当前显式 Orchestrator 更能突出路由、Skill、Policy 与执行语义；等异步任务、断点恢复或人工审批成为真实需求后，再引入 checkpoint 图编排。
+AgentForge 已展示 LangGraph。当前显式 Orchestrator 更能突出路由、Skill、Policy 与执行语义；v0.7 的审批恢复会重放确定性 control steps，v0.8 再以持久化 Worker Checkpoint 解决长任务和进程重启恢复，不为了技术栈重叠提前引入图框架。
 
-### 8. 相似不等于可复用
+### 9. 相似不等于可复用
 
 只有规范化任务规格和数据版本完全一致时才自动复用。结构化相似度超过阈值只产生 `semantic_candidate`，新策略仍调用领域 Tool；这避免了用 10/30 均线的结果回答 11/31 均线。回测依赖行情版本，行情和外部检索还受 TTL 约束。详见 [`ARTIFACT_MEMORY.md`](ARTIFACT_MEMORY.md)。
 
 ## 评测架构
 
 ```text
-golden.v4.jsonl (16 cases)
+golden.v5.jsonl (16 cases)
         ↓
 EvalRunner → real AurumAgent → Run + Trace + Tool Audit
         ↓
@@ -101,13 +109,14 @@ EvalReportRepository → CLI exit code / API / Web panel
 
 ## 威胁模型
 
-| 边界 | 风险 | v0.6 控制 |
+| 边界 | 风险 | v0.7 控制 |
 |---|---|---|
 | HTTP/MCP 输入 | 超长输入、Prompt Injection、破坏指令 | 长度校验；Tool 前威胁预检；fail closed |
 | 路由、Plan 与 Skill | 误路由、乱序或越权计划 | Pydantic 枚举；服务端 Skill 映射；Plan Validator/Runtime；Per-Skill Allowlist 与预算 |
 | LLM 输出 | 非法字段、代码或 SQL | `extra=forbid`；枚举/范围；确定性 fallback |
 | 外部搜索 | 超时、重定向、不可信内容 | HTTPS；8 秒超时；不跟随重定向；有界验证 |
 | MCP Server → Client | 恶意 Tool 描述、Schema 漂移、参数/结果注入、DoS | Namespace；Draft 2020-12；Schema Pin；大小/分页/超时限制；Injection 拒绝；故障隔离 |
+| Tool review → resume | 凭证伪造、参数篡改、跨 Run 使用、重放、并发双消费 | 高熵一次性 token；hash-only 存储；多字段绑定；TTL；SQLite 原子消费 |
 | 行情 SQLite | SQL 注入、意外写入 | `mode=ro`；参数化值；标识符校验 |
 | 持久化 | Secret 泄露、缓存污染、陈旧结果 | 参数化 SQL；最小化 Artifact Snapshot；数据版本 + TTL；Run ID 校验 |
 | Eval API | 计算资源滥用 | 固定本地数据集；最多 50 案例 |
@@ -159,10 +168,13 @@ EvalReportRepository → CLI exit code / API / Web panel
 - 远端 Tool Adapter 复用现有 Skill Allowlist、调用预算和 Tool Audit。
 - HTTP Catalog/Health 暴露 Server 状态、协议/实现版本、Tool 契约和发现耗时。
 
-### v0.7（治理审批）
+### v0.7（已完成：治理审批）
 
-- Tool 风险分级和 allow/deny/review 三态策略。
-- 可过期、不可重放的人工审批凭证与状态机。
+- Tool effect/risk 元数据与 allow/deny/review 三态策略，most-restrictive-wins。
+- pending/approved/denied/expired/consumed 状态机和一次性 hash-only 凭证。
+- Run/Plan/Step/Tool/参数摘要绑定，过期、伪造、重放及并发双消费 fail closed。
+- Web 审批面板、HTTP 控制面和只恢复不自批准的 MCP Tool。
+- Golden Set v5 对外部研究执行真实审批链，并核验审批与 Tool Audit 一致性。
 
 ### v0.8（长任务执行）
 
@@ -186,6 +198,7 @@ EvalReportRepository → CLI exit code / API / Web panel
 3. 输入 Prompt Injection，展示在零 Tool 调用时拒绝。
 4. 通过 MCP 调用同一请求，再用 Run Resource 读取结果。
 5. 查看 MCP Catalog，展示 stdio 动态发现、namespaced Tool、Schema 指纹和健康状态。
-6. 运行 Golden Set v4，展示 16 条案例、Plan/Event 一致性和复用效率门禁。
-7. 连续提问等价策略，展示 miss 与 exact hit 的耗时、Tool 调用和来源 Run 差异。
-8. 将参数改为相近值，展示 semantic candidate 仍重新执行的正确性边界。
+6. 提交外部研究请求，展示 Plan 暂停、风险说明、人工批准、一次性消费和恢复轨迹。
+7. 运行 Golden Set v5，展示 16 条案例、Plan/Event/Approval 一致性和复用效率门禁。
+8. 连续提问等价策略，展示 miss 与 exact hit 的耗时、Tool 调用和来源 Run 差异。
+9. 将参数改为相近值，展示 semantic candidate 仍重新执行的正确性边界。

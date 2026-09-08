@@ -70,7 +70,7 @@
           </dl>
           <div class="boundary">
             <span>Policy</span>
-            <p>Per-Skill Tool Budget<br />Allowlist · Preflight deny · Audit</p>
+            <p>Per-Skill Tool Budget<br />Allow · Deny · Human Review · Audit</p>
           </div>
         </aside>
       </section>
@@ -81,7 +81,7 @@
 
       <section class="quality panel" aria-labelledby="quality-title">
         <div class="quality-copy">
-          <p class="kicker">QUALITY GATE · GOLDEN SET V4</p>
+          <p class="kicker">QUALITY GATE · GOLDEN SET V5</p>
           <h2 id="quality-title">Agent Eval</h2>
           <p>用四类意图、对抗请求和重复任务评估路由、工作流、Tool Policy、结构化输出与 Artifact 复用。结果可持久化，也可作为 CI 回归门禁。</p>
           <div class="rubric" aria-label="评测权重">
@@ -102,6 +102,25 @@
           <div><p class="kicker">02 · RESULT</p><h2>结构化 Agent 反馈</h2></div>
           <span id="run-id" class="run-id"></span>
         </div>
+
+        <article id="approval-panel" class="approval-panel panel hidden" aria-live="assertive">
+          <div>
+            <p class="kicker">HUMAN-IN-THE-LOOP · LOCAL DEMO</p>
+            <h2>受控 Tool 等待人工决定</h2>
+            <p id="approval-reason" class="approval-reason"></p>
+            <dl class="approval-facts">
+              <div><dt>Tool</dt><dd id="approval-tool"></dd></div>
+              <div><dt>Effect / Risk</dt><dd id="approval-risk"></dd></div>
+              <div><dt>Expires</dt><dd id="approval-expiry"></dd></div>
+              <div><dt>Arguments digest</dt><dd id="approval-digest"></dd></div>
+            </dl>
+            <p class="approval-boundary">这是单用户本地演示控制面，不代表企业级身份认证；批准只对当前 Run、Plan、Step、Tool 和参数摘要生效。</p>
+          </div>
+          <div class="approval-actions">
+            <button id="deny-approval" class="secondary danger" type="button">拒绝本次调用</button>
+            <button id="approve-approval" class="primary" type="button"><span>批准并恢复</span><span aria-hidden="true">↗</span></button>
+          </div>
+        </article>
 
         <div id="warning-box" class="warning-box hidden"></div>
         <div id="cache-box" class="cache-box hidden"></div>
@@ -130,6 +149,11 @@
         <article class="panel trace-panel">
           <div class="panel-heading compact"><div><p class="kicker">04 · TRACE</p><h2>决策与工具执行轨迹</h2></div></div>
           <ol id="trace"></ol>
+        </article>
+
+        <article class="panel audit-panel">
+          <div class="panel-heading compact"><div><p class="kicker">05 · GOVERNANCE</p><h2>Tool 授权与执行审计</h2></div></div>
+          <ol id="tool-audit" class="tool-audit"></ol>
         </article>
       </section>
     </main>

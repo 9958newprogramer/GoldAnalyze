@@ -136,7 +136,7 @@ class EquityPoint(BaseModel):
 class AgentEvent(BaseModel):
     sequence: int
     stage: str
-    status: Literal["completed", "warning", "failed"]
+    status: Literal["completed", "warning", "failed", "waiting_approval"]
     message: str
     duration_ms: float
     details: dict[str, Any] = Field(default_factory=dict)
@@ -178,6 +178,45 @@ class ExecutionPlan(BaseModel):
     completed_steps: list[str] = Field(default_factory=list)
     skipped_steps: list[str] = Field(default_factory=list)
     failed_step: str | None = None
+    paused_step: str | None = None
+    rejected_step: str | None = None
+
+
+class ApprovalRequest(BaseModel):
+    """Public, token-free representation of one human approval decision."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    approval_id: str = Field(pattern=r"^[a-f0-9]{16}$")
+    run_id: str = Field(pattern=r"^[a-f0-9]{12}$")
+    plan_id: str = Field(pattern=r"^[a-f0-9]{12}$")
+    step_id: str = Field(pattern=r"^[a-z][a-z0-9_]{1,63}$")
+    tool_name: str = Field(min_length=2, max_length=128)
+    arguments_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
+    effect: Literal["read", "external", "write", "privileged"]
+    risk: Literal["low", "medium", "high"]
+    status: Literal["pending", "approved", "denied", "expired", "consumed"]
+    reason: str = Field(min_length=1, max_length=300)
+    created_at: datetime
+    expires_at: datetime
+    decided_at: datetime | None = None
+    consumed_at: datetime | None = None
+    decided_by: str | None = Field(default=None, max_length=80)
+
+
+class ApprovalGrant(BaseModel):
+    """One-time bearer credential returned only by an explicit approval action."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    approval: ApprovalRequest
+    approval_token: str = Field(min_length=50, max_length=200, repr=False)
+
+
+class ResumeRunRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    approval_token: str = Field(min_length=50, max_length=200, repr=False)
 
 
 class ThreatSignal(BaseModel):
@@ -283,13 +322,14 @@ class ArtifactSnapshot(BaseModel):
 
 class RunResponse(BaseModel):
     run_id: str
-    status: Literal["completed", "failed", "rejected"]
+    status: Literal["completed", "failed", "rejected", "pending_approval"]
     skill: str
     interpreter: str
     question: str
     route: IntentDecision | None = None
     plan: ExecutionPlan | None = None
-    execution_mode: Literal["tool_chain", "cache", "direct", "rejected"] = "tool_chain"
+    execution_mode: Literal["tool_chain", "cache", "direct", "rejected", "approval"] = "tool_chain"
+    requested_cache_policy: Literal["use", "refresh", "bypass"] = "use"
     cache_status: Literal["miss", "exact_hit", "semantic_candidate", "refresh", "bypass"] = "bypass"
     cache: CacheInfo | None = None
     strategy: StrategySpec | None = None
@@ -305,6 +345,7 @@ class RunResponse(BaseModel):
     warnings: list[str] = Field(default_factory=list)
     events: list[AgentEvent] = Field(default_factory=list)
     tool_audit: list[dict[str, Any]] = Field(default_factory=list)
+    approval: ApprovalRequest | None = None
     created_at: datetime
 
 

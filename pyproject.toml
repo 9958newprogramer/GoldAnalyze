@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aurumlab"
-version = "0.6.0"
-description = "Multi-Skill agent runtime with bounded plans, governed MCP tools, and evals"
+version = "0.7.0"
+description = "Multi-Skill agent runtime with bounded plans, governed MCP tools, HITL, and evals"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [

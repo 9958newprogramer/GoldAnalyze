@@ -29,6 +29,15 @@
 - 将 MCP Remote Tool Adapter 接入既有 Governance Gateway，使动态发现与动态授权解耦；远端调用继续执行 Per-Skill Allowlist、调用预算、参数白名单、超时控制和 authorization/execution Audit。
 - 将 MCP Tool 描述和结构化结果视为不可信输入，对 Prompt Injection、未知参数及过大 Schema/参数/结果进行调用前后拦截；以进程内和真实 stdio 集成测试覆盖发现、调用、漂移、超时及故障隔离。
 
+## v0.7 新增的可写要点
+
+- 为本地与 MCP Tool 建立 `read / external / write / privileged` effect、`low / medium / high` risk 元数据，在统一 Governance Gateway 中执行 most-restrictive-wins 的 allow/deny/review 决策；review 前不执行 Tool、不扣减预算。
+- 实现 pending、approved、denied、expired、consumed 人工审批状态机；一次性凭证绑定 Run、Plan、Step、Tool、参数 SHA-256 摘要与 TTL，数据库仅保存 token hash，并通过 SQLite 原子条件更新阻止重放和并发双消费。
+- 打通 HTTP、Web 和 MCP 审批恢复链：Web 可展示暂停步骤、风险和参数摘要并批准/拒绝；MCP 只接受控制面签发的凭证恢复，不向 Agent 暴露自批准能力。
+- 将外部研究和动态 MCP Tool 默认纳入审批范围，补充伪造、过期、跨任务、参数篡改、重放、并发竞争、明确审批意图及审计一致性测试；Golden Set v5 验证真实 `review → consume → execute` 链路。
+
+当前实现是本地单用户 HITL 演示，不能在简历或面试中表述为“企业级 RBAC/身份认证”。v0.8 前的 resume 会重放确定性 control steps，不应表述为持久化 Checkpoint 恢复。
+
 ## 面试时主动强调
 
 - 黄金仅用作有确定性输入输出的工具场景，工程重点是 Agent 的路由、能力边界、协议暴露、治理、可观测与评测。
@@ -37,4 +46,4 @@
 
 ## 下一版本增量表述（尚不可作为已完成能力）
 
-v0.7 将增加 Tool 风险分级、allow/deny/review 三态决策以及可过期、不可重放的人工审批凭证；完成并验证后再加入正式简历。
+v0.8 将增加 Redis Streams Worker、SSE、幂等、取消、超时、有限重试与持久化 Checkpoint；完成并验证前不能写入“已实现”简历条目。

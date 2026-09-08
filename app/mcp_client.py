@@ -17,7 +17,7 @@ from jsonschema.exceptions import SchemaError, ValidationError
 from mcp import Client, types
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from app.tools.registry import ToolRegistry
+from app.tools.registry import ToolMetadata, ToolRegistry
 
 MAX_SCHEMA_BYTES = 64 * 1024
 MAX_ARGUMENT_BYTES = 32 * 1024
@@ -322,7 +322,16 @@ class MCPClientManager:
             async def invoke(_qualified_name: str = name, **arguments: Any) -> Any:
                 return await self.call(_qualified_name, arguments)
 
-            registry.register(name, invoke)
+            registry.register(
+                name,
+                invoke,
+                ToolMetadata(
+                    effect="external",
+                    risk="medium",
+                    requires_approval=True,
+                    source="mcp",
+                ),
+            )
             self._registered_tools.add(name)
             registered.append(name)
         return registered
@@ -454,6 +463,8 @@ class MCPClientManager:
             if pinned is not None and fingerprint != pinned:
                 raise MCPSchemaDriftError("MCP Tool schema changed after discovery")
             qualified_name = f"mcp__{runtime.binding.spec.namespace}__{safe_name}"
+            if len(qualified_name) > 64:
+                raise MCPDiscoveryError("qualified MCP Tool name exceeds the planner limit")
             next_tools[qualified_name] = MCPRemoteTool(
                 server_id=runtime.binding.spec.server_id,
                 server_name=server_name,

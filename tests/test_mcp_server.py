@@ -1,6 +1,6 @@
 from mcp import Client
 
-from app.mcp_server import mcp
+from app.mcp_server import mcp, services
 
 
 async def test_mcp_discovers_and_calls_tools():
@@ -10,6 +10,7 @@ async def test_mcp_discovers_and_calls_tools():
         assert "handle_agent_request" in names
         assert "analyze_gold_strategy" in names
         assert "list_aurumlab_skills" in names
+        assert "resume_agent_run" in names
 
         result = await client.call_tool("list_aurumlab_skills")
         assert result.is_error is False
@@ -34,3 +35,35 @@ async def test_mcp_discovers_and_calls_tools():
         assert "aurum://skills/backtest-strategy" in uris
         assert "aurum://evals/latest" in uris
         assert "aurum://cache/stats" in uris
+
+
+async def test_mcp_can_resume_but_cannot_self_approve_a_reviewed_tool():
+    async with Client(mcp) as client:
+        pending_result = await client.call_tool(
+            "handle_agent_request",
+            {
+                "question": "搜索互联网资料：黄金与美元指数长期关系（MCP审批恢复测试）。",
+                "cache_policy": "bypass",
+            },
+        )
+        pending = pending_result.structured_content
+        assert pending_result.is_error is False
+        assert pending["status"] == "pending_approval"
+
+        tool_names = {tool.name for tool in (await client.list_tools()).tools}
+        assert "approve_agent_run" not in tool_names
+        grant = services.approvals.approve(
+            pending["approval"]["approval_id"],
+            decided_by="test-control-plane",
+        )
+        resumed = await client.call_tool(
+            "resume_agent_run",
+            {
+                "run_id": pending["run_id"],
+                "approval_token": grant.approval_token,
+            },
+        )
+
+        assert resumed.is_error is False
+        assert resumed.structured_content["status"] == "completed"
+        assert resumed.structured_content["approval"]["status"] == "consumed"

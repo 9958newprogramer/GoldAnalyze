@@ -49,7 +49,7 @@ class Settings:
     app_host: str = os.getenv("APP_HOST", "127.0.0.1")
     app_port: int = _port_from_env("APP_PORT", 8010)
     app_database_path: str = os.getenv("APP_DATABASE_PATH", "var/aurumlab.db")
-    eval_dataset_path: str = os.getenv("EVAL_DATASET_PATH", "evals/golden.v4.jsonl")
+    eval_dataset_path: str = os.getenv("EVAL_DATASET_PATH", "evals/golden.v5.jsonl")
     router_llm_api_key: str | None = os.getenv("ROUTER_LLM_API_KEY") or None
     router_llm_base_url: str = os.getenv("ROUTER_LLM_BASE_URL", "https://api.openai.com/v1")
     router_llm_model: str = os.getenv("ROUTER_LLM_MODEL", "gpt-5-mini")
@@ -83,6 +83,7 @@ class Settings:
     research_cache_ttl_seconds: int = _bounded_int_from_env(
         "RESEARCH_CACHE_TTL_SECONDS", 900, 5, 86_400
     )
+    approval_ttl_seconds: int = _bounded_int_from_env("APPROVAL_TTL_SECONDS", 300, 30, 3_600)
     cache_semantic_threshold: float = _bounded_float_from_env(
         "CACHE_SEMANTIC_THRESHOLD", 0.82, 0.5, 1.0
     )

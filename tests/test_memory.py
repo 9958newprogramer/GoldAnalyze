@@ -7,7 +7,7 @@ from app.bootstrap import build_services
 from app.config import Settings
 from app.memory import build_task_fingerprint
 from app.models import StrategySpec
-from app.tools.registry import ToolGateway, ToolPolicy, ToolRegistry
+from app.tools.registry import ToolGateway, ToolMetadata, ToolPolicy, ToolRegistry
 
 
 def test_task_fingerprint_is_stable_for_equivalent_structured_specs():
@@ -104,7 +104,7 @@ async def test_tool_gateway_request_memory_avoids_duplicate_call():
         return value * 2
 
     registry = ToolRegistry()
-    registry.register("double", handler)
+    registry.register("double", handler, ToolMetadata(effect="read", risk="low"))
     policy = ToolPolicy(policy_name="test", allowed_tools={"double"}, max_calls=1)
     gateway = ToolGateway(registry, policy)
 
@@ -122,8 +122,8 @@ async def test_request_memory_cannot_bypass_tool_allowlist():
         return value
 
     registry = ToolRegistry()
-    registry.register("allowed", handler)
-    registry.register("blocked", handler)
+    registry.register("allowed", handler, ToolMetadata(effect="read", risk="low"))
+    registry.register("blocked", handler, ToolMetadata(effect="read", risk="low"))
     policy = ToolPolicy(policy_name="test", allowed_tools={"allowed"}, max_calls=1)
     gateway = ToolGateway(registry, policy)
     await gateway.call("allowed", memory_key="shared", value=1)

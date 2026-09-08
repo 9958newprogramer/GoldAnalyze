@@ -6,6 +6,10 @@ const liveMessage = document.querySelector("#live-message");
 const results = document.querySelector("#results");
 const evalButton = document.querySelector("#eval-button");
 const cachePolicy = document.querySelector("#cache-policy");
+const approvalPanel = document.querySelector("#approval-panel");
+const approveApprovalButton = document.querySelector("#approve-approval");
+const denyApprovalButton = document.querySelector("#deny-approval");
+let pendingApproval = null;
 
 const backtestMetricDefinitions = [
   ["total_return_pct", "Total return", "%"],
@@ -214,6 +218,41 @@ function renderTrace(events) {
   });
 }
 
+function renderAudit(entries) {
+  const audit = document.querySelector("#tool-audit");
+  audit.replaceChildren();
+  if (!entries || entries.length === 0) {
+    const empty = document.createElement("li");
+    empty.className = "audit-empty";
+    empty.textContent = "本次 Run 未调用 Tool，或在 Tool 前被安全拒绝。";
+    audit.append(empty);
+    return;
+  }
+  entries.forEach((entry, index) => {
+    const item = document.createElement("li");
+    const sequence = document.createElement("span");
+    sequence.className = "audit-index";
+    sequence.textContent = String(index + 1).padStart(2, "0");
+    const phase = document.createElement("strong");
+    phase.textContent = entry.phase;
+    const tool = document.createElement("code");
+    tool.textContent = entry.tool;
+    const outcome = document.createElement("span");
+    outcome.className = `audit-outcome ${entry.decision || entry.outcome || "neutral"}`;
+    outcome.textContent = entry.decision || entry.outcome || "observed";
+    const details = document.createElement("small");
+    details.textContent = [
+      entry.effect && `effect ${entry.effect}`,
+      entry.risk && `risk ${entry.risk}`,
+      entry.reason && `reason ${entry.reason}`,
+      entry.approval_id && `approval ${entry.approval_id}`,
+      entry.call && `call ${entry.call}`,
+    ].filter(Boolean).join(" · ");
+    item.append(sequence, phase, tool, outcome, details);
+    audit.append(item);
+  });
+}
+
 function renderPlan(plan) {
   const list = document.querySelector("#execution-plan");
   list.replaceChildren();
@@ -234,9 +273,13 @@ function renderPlan(plan) {
       ? "completed"
       : step.step_id === plan.failed_step
         ? "failed"
-        : skipped.has(step.step_id)
-          ? "skipped"
-          : "planned";
+        : step.step_id === plan.rejected_step
+          ? "rejected"
+          : step.step_id === plan.paused_step
+            ? "waiting"
+            : skipped.has(step.step_id)
+              ? "skipped"
+              : "planned";
     state.className = `plan-state ${status}`;
     state.textContent = status.toUpperCase();
     const name = document.createElement("strong");
@@ -246,6 +289,33 @@ function renderPlan(plan) {
     item.append(state, name, binding);
     list.append(item);
   });
+}
+
+function renderApproval(run) {
+  if (run.status !== "pending_approval" || !run.approval) {
+    pendingApproval = null;
+    approvalPanel.classList.add("hidden");
+    return;
+  }
+  pendingApproval = {
+    runId: run.run_id,
+    approvalId: run.approval.approval_id,
+  };
+  setText("#approval-tool", run.approval.tool_name);
+  setText("#approval-risk", `${run.approval.effect} / ${run.approval.risk}`);
+  setText("#approval-expiry", new Date(run.approval.expires_at).toLocaleString());
+  setText("#approval-digest", run.approval.arguments_digest);
+  setText("#approval-reason", run.approval.reason);
+  approvalPanel.classList.remove("hidden");
+}
+
+async function readResponse(response, fallbackMessage) {
+  const payload = await response.json();
+  if (!response.ok) {
+    const detail = typeof payload.detail === "string" ? payload.detail : fallbackMessage;
+    throw new Error(detail);
+  }
+  return payload;
 }
 
 function renderWarnings(warnings) {
@@ -296,8 +366,10 @@ function renderResult(run) {
   setText("#strategy-spec", JSON.stringify(artifact, null, 2));
   renderWarnings(run.warnings);
   renderCache(run.cache, run.cache_status);
+  renderApproval(run);
   renderPlan(run.plan);
   renderTrace(run.events || []);
+  renderAudit(run.tool_audit || []);
   if (run.metrics) renderMetrics(run.metrics, backtestMetricDefinitions);
   else if (run.market_result) renderMetrics(run.market_result, marketMetricDefinitions);
   else renderMetrics(null, []);
@@ -305,6 +377,72 @@ function renderResult(run) {
   renderSources(run.research_result ? run.research_result.sources : []);
   results.scrollIntoView({ behavior: "smooth", block: "start" });
 }
+
+approveApprovalButton.addEventListener("click", async () => {
+  const approval = pendingApproval;
+  if (!approval) return;
+  approveApprovalButton.disabled = true;
+  denyApprovalButton.disabled = true;
+  liveState.classList.add("running");
+  liveMessage.textContent = "正在签发一次性审批凭证并恢复受控 Tool…";
+  try {
+    const grant = await readResponse(
+      await fetch(
+        `/api/runs/${approval.runId}/approvals/${approval.approvalId}/approve`,
+        {
+          method: "POST",
+          headers: { "X-AurumLab-Approval-Intent": "approve" },
+        },
+      ),
+      "审批失败",
+    );
+    const resumed = await readResponse(
+      await fetch(`/api/runs/${approval.runId}/resume`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ approval_token: grant.approval_token }),
+      }),
+      "恢复执行失败",
+    );
+    renderResult(resumed);
+    liveMessage.textContent = "审批凭证已原子消费，受控 Tool 执行完成";
+  } catch (error) {
+    liveMessage.textContent = `审批失败：${error.message}`;
+  } finally {
+    liveState.classList.remove("running");
+    approveApprovalButton.disabled = false;
+    denyApprovalButton.disabled = false;
+  }
+});
+
+denyApprovalButton.addEventListener("click", async () => {
+  const approval = pendingApproval;
+  if (!approval) return;
+  approveApprovalButton.disabled = true;
+  denyApprovalButton.disabled = true;
+  liveState.classList.add("running");
+  liveMessage.textContent = "正在拒绝受控 Tool 调用…";
+  try {
+    const denied = await readResponse(
+      await fetch(
+        `/api/runs/${approval.runId}/approvals/${approval.approvalId}/deny`,
+        {
+          method: "POST",
+          headers: { "X-AurumLab-Approval-Intent": "deny" },
+        },
+      ),
+      "拒绝审批失败",
+    );
+    renderResult(denied);
+    liveMessage.textContent = "审批已拒绝，受控 Tool 未执行";
+  } catch (error) {
+    liveMessage.textContent = `拒绝失败：${error.message}`;
+  } finally {
+    liveState.classList.remove("running");
+    approveApprovalButton.disabled = false;
+    denyApprovalButton.disabled = false;
+  }
+});
 
 document.querySelectorAll(".example").forEach((button) => {
   button.addEventListener("click", () => {

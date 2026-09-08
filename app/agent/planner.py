@@ -110,6 +110,7 @@ class PlanRuntime:
     _completed: list[str] = field(default_factory=list)
     _active: str | None = None
     _failed: str | None = None
+    _paused: str | None = None
 
     def __post_init__(self) -> None:
         if not self.plan.validated:
@@ -143,12 +144,19 @@ class PlanRuntime:
             self._active = None
         self._failed = step_id
 
+    def pause(self, step_id: str) -> None:
+        if self._active != step_id:
+            raise PlanExecutionError(f"无法暂停未激活步骤 {step_id}")
+        self._active = None
+        self._paused = step_id
+
     def snapshot(self) -> ExecutionPlan:
         remaining = [step.step_id for step in self.plan.steps[self._cursor :]]
         return self.plan.model_copy(
             update={
                 "completed_steps": list(self._completed),
-                "skipped_steps": remaining if self._failed is None else [],
+                "skipped_steps": remaining if self._failed is None and self._paused is None else [],
                 "failed_step": self._failed,
+                "paused_step": self._paused,
             }
         )

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hmac
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from time import perf_counter
@@ -12,17 +13,26 @@ from app.agent.interpreter import OpenAICompatibleStrategyInterpreter
 from app.agent.planner import BoundedPlanner, PlanRuntime
 from app.agent.router import IntentRouter
 from app.agent.task_compiler import compile_external_research, compile_market_query
+from app.approval import (
+    ApprovalBindingError,
+    ApprovalRepository,
+    ApprovalRequired,
+    ApprovalStateError,
+    ApprovalTokenError,
+)
 from app.domain.backtest import BacktestResult, run_sma_crossover
 from app.domain.market_data import Bar, MarketDataRepository, profile_bars
 from app.memory import ArtifactCache, CacheLookup, TaskFingerprint, build_task_fingerprint
 from app.models import (
     AgentEvent,
+    ApprovalRequest,
     ArtifactSnapshot,
     CacheInfo,
     DataProfile,
     ExecutionPlan,
     ExternalResearchResult,
     ExternalResearchSpec,
+    IntentDecision,
     MarketBarView,
     MarketQueryResult,
     MarketQuerySpec,
@@ -32,7 +42,7 @@ from app.models import (
 )
 from app.skills.registry import SkillRegistry
 from app.storage import RunRepository
-from app.tools.registry import ToolGateway, ToolPolicy, ToolRegistry
+from app.tools.registry import ToolGateway, ToolMetadata, ToolPolicy, ToolRegistry
 from app.tools.search import SearchProvider
 
 
@@ -56,6 +66,7 @@ class AurumAgent:
         skills: SkillRegistry,
         runs: RunRepository,
         artifacts: ArtifactCache,
+        approvals: ApprovalRepository,
         router: IntentRouter | None = None,
         planner: BoundedPlanner | None = None,
         market_cache_ttl_seconds: int = 300,
@@ -67,20 +78,32 @@ class AurumAgent:
         self.skills = skills
         self.runs = runs
         self.artifacts = artifacts
+        self.approvals = approvals
         self.router = router or IntentRouter()
         self.planner = planner or BoundedPlanner()
         self.market_cache_ttl_seconds = market_cache_ttl_seconds
         self.research_cache_ttl_seconds = research_cache_ttl_seconds
         self.tools = ToolRegistry()
-        self.tools.register("inspect_market_data", self._inspect_market_data)
-        self.tools.register("validate_strategy_spec", self._validate_strategy_spec)
-        self.tools.register("run_backtest", self._run_backtest)
-        self.tools.register("summarize_result", self._summarize_result)
-        self.tools.register("query_market_data", self._query_market_data)
-        self.tools.register("summarize_market_query", self._summarize_market_query)
-        self.tools.register("search_external_knowledge", self._search_external_knowledge)
-        self.tools.register("summarize_external_research", self._summarize_external_research)
-        self.tools.register("compose_general_response", self._compose_general_response)
+        read_low = ToolMetadata(effect="read", risk="low")
+        self.tools.register("inspect_market_data", self._inspect_market_data, read_low)
+        self.tools.register("validate_strategy_spec", self._validate_strategy_spec, read_low)
+        self.tools.register("run_backtest", self._run_backtest, read_low)
+        self.tools.register("summarize_result", self._summarize_result, read_low)
+        self.tools.register("query_market_data", self._query_market_data, read_low)
+        self.tools.register("summarize_market_query", self._summarize_market_query, read_low)
+        self.tools.register(
+            "search_external_knowledge",
+            self._search_external_knowledge,
+            ToolMetadata(
+                effect="external",
+                risk="medium",
+                requires_approval=True,
+            ),
+        )
+        self.tools.register(
+            "summarize_external_research", self._summarize_external_research, read_low
+        )
+        self.tools.register("compose_general_response", self._compose_general_response, read_low)
 
     async def _inspect_market_data(self, spec: StrategySpec) -> dict[str, Any]:
         bars = self.market_repository.load(spec)
@@ -212,6 +235,25 @@ class AurumAgent:
                 )
             )
             return output
+        except ApprovalRequired as exc:
+            runtime.pause(stage)
+            events.append(
+                AgentEvent(
+                    sequence=len(events) + 1,
+                    stage="approval_required",
+                    status="waiting_approval",
+                    message=f"Tool {tool_name or stage} 等待人工审批，尚未执行",
+                    duration_ms=round((perf_counter() - started) * 1_000, 2),
+                    details={
+                        "approval_id": exc.approval.approval_id,
+                        "tool": exc.approval.tool_name,
+                        "effect": exc.approval.effect,
+                        "risk": exc.approval.risk,
+                        "expires_at": exc.approval.expires_at.isoformat(),
+                    },
+                )
+            )
+            raise
         except Exception as exc:
             runtime.fail(stage)
             events.append(
@@ -589,15 +631,101 @@ class AurumAgent:
         *,
         cache_policy: Literal["use", "refresh", "bypass"] = "use",
     ) -> RunResponse:
-        run_id = uuid4().hex[:12]
-        created_at = datetime.now(UTC)
+        return await self._execute(question, cache_policy=cache_policy)
+
+    async def resume(self, run_id: str, approval_token: str) -> RunResponse:
+        pending = self.runs.get(run_id)
+        if pending is None:
+            raise ApprovalBindingError("run not found")
+        if pending.status != "pending_approval" or pending.approval is None:
+            raise ApprovalStateError("run is not waiting for approval")
+        if pending.route is None or pending.plan is None:
+            raise ApprovalBindingError("pending run is missing its route or plan")
+        self.approvals.validate_token(
+            approval_token,
+            approval_id=pending.approval.approval_id,
+            run_id=run_id,
+        )
+        current_plan = self.planner.build(self.skills.get(pending.route.skill))
+        if current_plan.plan_id != pending.plan.plan_id:
+            raise ApprovalBindingError("plan changed after approval was requested")
+        return await self._execute(
+            pending.question,
+            cache_policy=pending.requested_cache_policy,
+            run_id=pending.run_id,
+            created_at=pending.created_at,
+            route_override=pending.route,
+            approval_token=approval_token,
+            prior_audit=pending.tool_audit,
+            expected_plan_id=pending.plan.plan_id,
+        )
+
+    def deny_approval(self, run_id: str, approval_id: str) -> RunResponse:
+        pending = self.runs.get(run_id)
+        if pending is None:
+            raise ApprovalBindingError("run not found")
+        if pending.status != "pending_approval" or pending.approval is None:
+            raise ApprovalStateError("run is not waiting for approval")
+        if not hmac.compare_digest(pending.approval.approval_id, approval_id):
+            raise ApprovalBindingError("approval is bound to a different run")
+        step_ids = [step.step_id for step in pending.plan.steps]
+        if pending.approval.step_id not in step_ids:
+            raise ApprovalBindingError("approval step is missing from the persisted plan")
+        approval = self.approvals.deny(approval_id, decided_by="local-demo-operator")
+        rejected_index = step_ids.index(approval.step_id)
+        terminal_plan = pending.plan.model_copy(
+            update={
+                "paused_step": None,
+                "rejected_step": approval.step_id,
+                "skipped_steps": step_ids[rejected_index + 1 :],
+            }
+        )
+        events = [
+            *pending.events,
+            AgentEvent(
+                sequence=len(pending.events) + 1,
+                stage="approval_denied",
+                status="warning",
+                message="人工审批已拒绝，受控 Tool 未执行",
+                duration_ms=0,
+                details={"approval_id": approval_id, "tool": approval.tool_name},
+            ),
+        ]
+        response = pending.model_copy(
+            update={
+                "status": "rejected",
+                "execution_mode": "rejected",
+                "approval": approval,
+                "plan": terminal_plan,
+                "summary": "人工审批已拒绝，Agent 未执行等待审批的 Tool。",
+                "warnings": [*pending.warnings, "审批拒绝后不能恢复本次 Run。"],
+                "events": events,
+            }
+        )
+        self.runs.save(response)
+        return response
+
+    async def _execute(
+        self,
+        question: str,
+        *,
+        cache_policy: Literal["use", "refresh", "bypass"],
+        run_id: str | None = None,
+        created_at: datetime | None = None,
+        route_override: IntentDecision | None = None,
+        approval_token: str | None = None,
+        prior_audit: list[dict[str, Any]] | None = None,
+        expected_plan_id: str | None = None,
+    ) -> RunResponse:
+        run_id = run_id or uuid4().hex[:12]
+        created_at = created_at or datetime.now(UTC)
         events: list[AgentEvent] = []
         cache_task: TaskFingerprint | None = None
         cache_ttl: int | None = None
         plan: ExecutionPlan | None = None
         runtime: PlanRuntime | None = None
         route_started = perf_counter()
-        route = await self.router.route(question)
+        route = route_override or await self.router.route(question)
         events.append(
             AgentEvent(
                 sequence=1,
@@ -614,6 +742,7 @@ class AurumAgent:
                     "router": route.router,
                     "needs_clarification": route.needs_clarification,
                     "fallback_reason": route.fallback_reason,
+                    "resumed": route_override is not None,
                 },
             )
         )
@@ -636,6 +765,7 @@ class AurumAgent:
                 question=question,
                 route=route,
                 execution_mode="rejected",
+                requested_cache_policy=cache_policy,
                 cache_status="bypass",
                 cache=CacheInfo(status="bypass", reason="policy_rejected_before_cache_lookup"),
                 summary="请求包含高风险指令，Agent 已在调用任何 Tool 前安全拒绝。",
@@ -651,8 +781,8 @@ class AurumAgent:
             policy_name=f"{skill.name}@{skill.version}",
             allowed_tools=set(skill.allowed_tools),
             max_calls=skill.max_tool_calls,
+            audit_log=list(prior_audit or []),
         )
-        gateway = ToolGateway(self.tools, policy)
         events.append(
             AgentEvent(
                 sequence=2,
@@ -663,14 +793,27 @@ class AurumAgent:
                 details={
                     "allowed_tools": skill.allowed_tools,
                     "max_tool_calls": skill.max_tool_calls,
+                    "tool_risks": {
+                        name: {
+                            "effect": self.tools.get_definition(name).metadata.effect,
+                            "risk": self.tools.get_definition(name).metadata.risk,
+                            "requires_approval": self.tools.get_definition(
+                                name
+                            ).metadata.requires_approval,
+                        }
+                        for name in skill.allowed_tools
+                    },
                 },
             )
         )
 
+        gateway: ToolGateway | None = None
         try:
             plan_started = perf_counter()
             try:
                 plan = self.planner.build(skill)
+                if expected_plan_id is not None and plan.plan_id != expected_plan_id:
+                    raise ApprovalBindingError("plan changed after approval was requested")
                 runtime = PlanRuntime(plan)
                 events.append(
                     AgentEvent(
@@ -703,6 +846,32 @@ class AurumAgent:
                 )
                 raise
 
+            def approval_consumed(approval: ApprovalRequest) -> None:
+                events.append(
+                    AgentEvent(
+                        sequence=len(events) + 1,
+                        stage="approval_resume",
+                        status="completed",
+                        message="一次性人工审批已校验并原子消费，恢复 Tool 执行",
+                        duration_ms=0,
+                        details={
+                            "approval_id": approval.approval_id,
+                            "tool": approval.tool_name,
+                            "risk": approval.risk,
+                        },
+                    )
+                )
+
+            gateway = ToolGateway(
+                self.tools,
+                policy,
+                approvals=self.approvals,
+                run_id=run_id,
+                plan_id=plan.plan_id,
+                approval_token=approval_token,
+                on_approval_consumed=approval_consumed,
+            )
+
             workflows = {
                 "backtest_strategy": self._run_backtest_workflow,
                 "query_market_data": self._run_market_query_workflow,
@@ -730,11 +899,43 @@ class AurumAgent:
                     if cache_status == "exact_hit"
                     else "tool_chain"
                 ),
+                requested_cache_policy=cache_policy,
                 events=events,
                 tool_audit=policy.audit_log,
+                approval=gateway.consumed_approval,
                 created_at=created_at,
                 **payload,
             )
+        except ApprovalRequired as exc:
+            if runtime is not None:
+                plan = runtime.snapshot()
+            response = RunResponse(
+                run_id=run_id,
+                status="pending_approval",
+                skill=f"{skill.name}@{skill.version}",
+                interpreter="pending-approval",
+                question=question,
+                route=route,
+                plan=plan,
+                execution_mode="approval",
+                requested_cache_policy=cache_policy,
+                cache_status="bypass",
+                cache=CacheInfo(
+                    status="bypass",
+                    reason="approval_required_before_tool_execution",
+                ),
+                summary=(
+                    f"Tool {exc.approval.tool_name} 需要人工审批；"
+                    "当前 Run 已安全暂停，Tool 尚未执行且预算未扣减。"
+                ),
+                warnings=["审批凭证仅在批准时返回一次，且不能跨 Run、Plan 或参数使用。"],
+                events=events,
+                tool_audit=policy.audit_log,
+                approval=exc.approval,
+                created_at=created_at,
+            )
+        except (ApprovalTokenError, ApprovalStateError, ApprovalBindingError):
+            raise
         except Exception as exc:  # noqa: BLE001 -- outer Agent boundary must fail closed
             if runtime is not None:
                 plan = runtime.snapshot()
@@ -746,6 +947,7 @@ class AurumAgent:
                 question=question,
                 route=route,
                 plan=plan,
+                requested_cache_policy=cache_policy,
                 summary=f"Agent 已安全停止：{exc}",
                 warnings=["未运行用户提供的代码、SQL 或 Shell。"],
                 events=events,
