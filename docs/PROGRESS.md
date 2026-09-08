@@ -19,9 +19,9 @@
 |---|---|---|---|
 | v0.4-baseline | 固化现有 Router、4 Skills、治理、MCP Server、Memory、Eval | 已验证，checkpoint `c972115` | `make verify`；Golden Set 16/16 |
 | v0.5-planner | 类型化 Bounded Planner 与计划轨迹 | 已验证，checkpoint `e9c16aa` | 四类意图计划正确；越权/乱序/超预算计划被拒；API/MCP 返回 Plan |
-| v0.6-mcp-client | MCP Client 与动态 Tool 目录 | 已验证 | 动态发现、Schema 指纹、命名空间、超时、健康状态均有集成测试 |
-| v0.7-approval | 风险分级与人工审批状态机 | 已验证 | allow/deny/review 完整闭环；审批不可伪造、过期或重复使用 |
-| v0.8-async | Redis Streams Worker 与 SSE 长任务 | 进行中 | 幂等、取消、超时、有限重试、Checkpoint 恢复和断线重连测试；v0.8a checkpoint `4681e60` |
+| v0.6-mcp-client | MCP Client 与动态 Tool 目录 | 已验证，checkpoint `3af3173` | 动态发现、Schema 指纹、命名空间、超时、健康状态均有集成测试 |
+| v0.7-approval | 风险分级与人工审批状态机 | 已验证，checkpoint `975d98d` | allow/deny/review 完整闭环；审批不可伪造、过期或重复使用 |
+| v0.8-async | Redis Streams Worker 与 SSE 长任务 | 已验证，checkpoint `4f5206f` | 幂等、取消、超时、有限重试、Checkpoint 恢复和断线重连测试；真实 Redis smoke 与浏览器闭环通过 |
 | v0.9-observability | OpenTelemetry 与运行指标 | 未开始 | HTTP→Agent→Tool→Store/Worker Trace 连通；关键指标可导出 |
 | v1.0-resume | 招聘展示与质量证据包 | 未开始 | 100+ Eval、CI、Docker、非金融 Skill、演示脚本、简历指标报告 |
 
@@ -34,7 +34,7 @@
 | LLM Router + Bounded Planner + 版本化 Skill | 4 类类型化意图、4 个 Skill、LLM 失败规则降级；类型化计划、独立校验与运行时逐步授权 | 当前为确定性线性计划；尚无分支、并行和重规划 |
 | MCP Server/Client + 动态发现 | Agent MCP Server；进程内/stdio Client；namespaced Catalog；Schema Pin、超时、健康与治理集成测试 | 尚无远程 HTTP/OAuth；默认远端 Tool 尚未进入业务 Skill |
 | Tool Governance + 人工审批 | Tool effect/risk、most-restrictive allow/deny/review；hash-only 一次性凭证；Run/Plan/Step/Tool/参数绑定；Web/API/MCP 恢复；攻击、过期、重放与并发测试 | 当前仅为本地单用户控制面；尚无企业身份认证、RBAC 与多租户隔离 |
-| Redis Worker + SSE + 恢复 | 无 | 整项待实现 |
+| Redis Worker + SSE + 恢复 | Redis Streams Consumer Group、双重租约、有限重试/死信、软取消、步骤超时、JSON Checkpoint、SSE 续传与异步 HITL；96 tests + 真实 Redis smoke + 浏览器证据 | 当前为单节点 SQLite 事件轮询；尚无多租户鉴权、Redis HA 与跨节点 SSE fan-out |
 | OpenTelemetry | 无 | 整项待实现 |
 | Artifact Memory + Agent Eval | 两级复用、TTL/版本失效、16 条 v5 Golden Set，Eval 校验 Plan/Event 及审批审计链一致性 | 需扩充至 100+、接入 CI 并补对抗覆盖 |
 
@@ -247,21 +247,57 @@
 
 - 完成 v0.8c UI、Redis Compose、运行文档和真实服务 smoke 路径；验证后再把 v0.8 标记为已验证。
 
+**Git checkpoint**：`d35b4aa`
+
+### v0.8c-async-demo — 2026-09-08
+
+**完成内容**
+
+- Web UI 增加 Sync / Async 执行模式；异步模式通过 SSE 展示 Job 状态、单调事件、逐步骤 Checkpoint、软取消和 HITL 审批恢复，保留无 Redis 的同步演示入口。
+- SSE 同时支持标准 `Last-Event-ID` 和显式 `after` cursor。修复审批重新入队时从 0 重放旧事件的前端竞态，并为静态脚本增加版本参数避免演示环境继续使用旧缓存。
+- 新增固定版本的 `compose.redis.yaml`、`make redis-up/down`、`make worker` 与真实 Redis opt-in 测试；Redis 仅绑定 loopback 并启用 AOF。
+- Worker CLI 在 Redis 短暂不可达时采用有界退避重连，不因一次连接失败退出；运行时显式配置 RESP 2/3 协议版本。
+- README、异步运行时文档、架构文档和简历证据同步升级到 v0.8.0。
+
+**关键优化与取舍**
+
+- Redis 消息仍只包含 opaque Job ID；问题、结果、Tool 参数和审批 token 留在持久化控制面，减少队列泄露面。
+- SSE 以 SQLite 单调 Event ID 为真相源，浏览器只追加大于当前 cursor 的事件；审批前后的两段连接可无重复拼成完整 `#1 → #11` 轨迹。
+- Redis Compose 是本地开发依赖，不包装成生产级 HA；本机无 Docker，因此另外编译运行官方 Redis 8.2.9 完成真实协议验证，并明确记录 Compose 未在本机执行。
+
+**验证证据**
+
+- `make verify`：Ruff check/format 通过，Pytest `96 passed, 1 skipped`；Golden Set v5 `16/16`、score `100.0`。
+- `AURUMLAB_REDIS_TEST_URL=redis://127.0.0.1:6392/0 .venv/bin/pytest -q -m redis_integration`：官方 Redis 8.2.9 实例上 `1 passed`，覆盖 ping、Consumer Group、XADD/XREADGROUP、XPENDING、XAUTOCLAIM 与 XACK。
+- 浏览器真实 API + Worker + Redis：行情异步 Job 依次产生 7 个事件并完成；队列中任务可软取消；外部研究在事件 5 暂停审批，批准后从 Checkpoint 恢复并按事件 6–11 完成，事件无重复。
+
+**已知限制**
+
+- SSE 仍由单节点 API 轮询 SQLite；生产化需要共享事件 fan-out、连接限额、认证授权和租户隔离。
+- 软取消只在确定性步骤边界生效，不中断正在执行中的第三方调用；Tool 自身依赖硬超时收敛。
+- Compose 配置已静态检查且真实 Redis 协议已验证，但因本机没有 Docker，尚无本机 `docker compose up` 证据。
+
+**下一步**
+
+- 实现 v0.9 OpenTelemetry Trace/Metrics，把 HTTP、Job、Worker、Plan、Tool、Store 与恢复链串成可导出的端到端观测证据。
+
+**Git checkpoint**：`4f5206f`
+
 ## 当前工作区
 
 - 目标分支：`codex/resume-ready-agent-runtime`
-- 当前版本：`0.7.0`（v0.8 开发中）
-- 当前阶段：`v0.8b` 已验证，准备创建 checkpoint；随后进入 `v0.8c`
+- 当前版本：`0.8.0`
+- 当前阶段：`v0.8` 已验证；下一阶段为 `v0.9-observability`
 - 入口：`app/agent/orchestrator.py`
 - 数据契约：`app/models.py`
 - Skill Manifest：`skills/*/skill.json`
 - 验证命令：`make verify && .venv/bin/aurumlab-eval --json`
 
-## 下一步：v0.8-async
+## 下一步：v0.9-observability
 
-1. Web UI 增加 Async Job 模式、SSE 事件进度、软取消和异步审批恢复，同时保留 Sync Run 演示。
-2. 增加 Redis Compose 与一键运行说明，并提供真实 Redis smoke 命令；本机能力允许时执行。
-3. 更新架构/README/求职表达和版本号，完成 v0.8 全量验证与独立 Git checkpoint。
+1. 定义 Trace/Metric 命名、低基数字段和隐私边界，选择 OTLP + Console/In-memory 验证链路。
+2. 为 HTTP、Agent Run、Async Job、Worker attempt、Plan step、Tool authorization/execution、Store 与 Checkpoint 增加关联 Span。
+3. 增加端到端 Trace 测试、运行指标导出、可演示查询方式和 v0.9 Git checkpoint。
 
 ## 中断恢复步骤
 
