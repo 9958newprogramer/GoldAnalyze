@@ -110,19 +110,31 @@ class RuleBasedIntentRouter:
             "external_research": 0.05,
             "other": 0.15,
         }
-        if _contains(question, r"回测|策略|最大回撤|夏普|收益率|胜率"):
+        if _contains(question, r"回[测測]|策略|最大回撤|夏普|收益率|胜率"):
             scores["backtest_strategy"] += 0.55
         if _contains(question, r"均[线線]|MA\s*\d"):
             scores["backtest_strategy"] += 0.15
-        if _contains(question, r"上穿|下穿|金叉|死叉|做多|平仓|平倉"):
+        if _contains(
+            question,
+            r"上穿|下穿|金叉|死叉|交叉|做多|平仓|平倉|手续费|手續費|滑点|滑點",
+        ):
             scores["backtest_strategy"] += 0.35
-        if _contains(question, r"K线|K 线|K線|行情|开盘|收盘|最高|最低|成交量|价格"):
+        if _contains(
+            question,
+            r"K线|K 线|K線|日K|小时K|小時K|行情|開盤|开盘|收盘|最高|最低|成交量|价格",
+        ):
             scores["query_market_data"] += 0.48
         if _contains(question, r"最近|近\s*\d+\s*(?:根|条)|查询|查看|给我"):
             scores["query_market_data"] += 0.22
-        if _contains(question, r"新闻|资讯|消息|互联网|联网|搜索|外部资料|最新进展"):
+        if _contains(
+            question,
+            r"新闻|新聞|资讯|資訊|消息|互联网|互聯網|联网|聯網|搜索|搜尋|外部资料|外部資料|最新进展|最新進展",
+        ):
             scores["external_research"] += 0.65
-        if _contains(question, r"为什么|原因|影响|宏观|美联储|利率|地缘|政策"):
+        if _contains(
+            question,
+            r"为什么|為什麼|原因|影响|宏观|宏觀|美联储|利率|地缘|地緣|政策",
+        ):
             scores["external_research"] += 0.25
 
         scores = {name: min(value, 1.0) for name, value in scores.items()}

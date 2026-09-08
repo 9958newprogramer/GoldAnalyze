@@ -66,6 +66,21 @@ async def test_rule_router_is_used_when_llm_is_not_configured():
     assert decision.fallback_reason == "router_llm_not_configured"
 
 
+@pytest.mark.parametrize(
+    ("question", "expected_intent"),
+    [
+        ("评估黄金日线14日和56日均线交叉。", "backtest_strategy"),
+        ("查询2022年至2025年黄金日K数据。", "query_market_data"),
+        ("查詢外部資料：美元指數為什麼影響黃金？", "external_research"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_rule_router_handles_golden_set_language_variants(question, expected_intent):
+    decision = await IntentRouter().route(question)
+
+    assert decision.intent == expected_intent
+
+
 @pytest.mark.asyncio
 async def test_llm_failure_degrades_to_rule_router_without_error_details():
     classifier = FakeClassifier(error=TimeoutError("sensitive provider detail"))

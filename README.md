@@ -239,7 +239,9 @@ Provider 使用 HTTPS、8 秒超时、禁止自动重定向、最多 10 个结�
 
 ## Agent Eval 质量门禁
 
-[`evals/golden.v5.jsonl`](evals/golden.v5.jsonl) 包含 16 个案例，覆盖四类意图、日线/小时线参数、“1小时K”回归、行情查询、外部检索审批、繁体输入、Prompt Injection 拒绝和重复任务复用，并校验 Plan/Event 轨迹与 `review → consume → execute` 审计链一致。
+[`evals/golden.v6.jsonl`](evals/golden.v6.jsonl) 包含 108 个真实 Agent 案例：44 个策略任务、24 个行情查询、12 个外部研究和 28 个其他意图；其中包含 16 个对抗拒绝、12 个人工审批、8 个精确缓存复用案例。每条都执行真实 Router→Skill→Plan→Tool→Artifact 链路，并校验 Plan/Event 轨迹与 `review → consume → execute` 审计链一致。
+
+评测前还会执行数据集级覆盖契约：至少 100 条、问题与 ID 唯一、四类路由配额、日线/小时线配额，以及审批、对抗、缓存、边界和繁体输入的最低覆盖。小样本、重复问题或错误标签会在执行前直接失败，避免用同义句灌水。
 
 | 维度 | 权重 | 检查内容 |
 |---|---:|---|
@@ -255,6 +257,8 @@ Provider 使用 HTTPS、8 秒超时、禁止自动重定向、最多 10 个结�
 ```
 
 存在任一失败维度时案例失败；总分不达阈值或存在失败案例时 CLI 返回非零退出码，可直接接入 CI。Web UI、API 和 CLI 使用同一个真实 Agent，而不是评测替身。
+
+GitHub Actions 在 Python 3.12 与真实 Redis Service 上执行 `make verify`，同一门禁包含 Ruff、全量 Pytest、Redis Consumer Group 集成测试与 108 条 Eval。Action 依赖使用完整 commit SHA 锁定，并将仓库权限限制为只读。详见 [`docs/EVALS.md`](docs/EVALS.md)。
 
 ## MCP Client / Server
 
@@ -331,7 +335,7 @@ app/
   main.py         # FastAPI
   mcp_server.py   # Agent MCP Tools / Resources
 skills/           # 4 个版本化 Skill 包
-evals/            # v1—v5 版本化评测集
+evals/            # v1—v6 版本化评测集（v6: 108 cases）
 tests/
 docs/
 ```

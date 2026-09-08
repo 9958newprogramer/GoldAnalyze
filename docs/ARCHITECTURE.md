@@ -116,7 +116,7 @@ Skill、注册 Tool、治理枚举、状态与耗时；Metric label 只用路由
 ## 评测架构
 
 ```text
-golden.v5.jsonl (16 cases)
+golden.v6.jsonl (108 cases) → dataset coverage contract
         ↓
 EvalRunner → real AurumAgent → Run + Trace + Tool Audit
         ↓
@@ -130,7 +130,7 @@ Deterministic Rubric
 EvalReportRepository → CLI exit code / API / Web panel
 ```
 
-开放式报告暂不使用 LLM-as-Judge，避免离线和 CI 分数漂移。后续可将 Judge 作为非阻塞维度，不替代可确定断言。
+数据集级先检查规模、唯一性、路由分布和审批/对抗/缓存/边界/地域输入配额，然后才执行案例。开放式报告暂不使用 LLM-as-Judge，避免离线和 CI 分数漂移。后续可将 Judge 作为非阻塞维度，不替代可确定断言。
 
 ## 威胁模型
 

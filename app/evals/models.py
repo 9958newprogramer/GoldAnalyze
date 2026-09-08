@@ -27,7 +27,7 @@ class EvalCase(BaseModel):
     approval_scenario: Literal["none", "approve"] = "none"
     cache_scenario: Literal["bypass", "exact_hit"] = "bypass"
     expected_cache_status: Literal["bypass", "exact_hit"] = "bypass"
-    required_stages: list[str]
+    required_stages: list[str] = Field(default_factory=list)
     expected_warning_contains: list[str] = Field(default_factory=list)
 
 
@@ -50,6 +50,20 @@ class EvalCaseResult(BaseModel):
     failures: list[str] = Field(default_factory=list)
 
 
+class EvalCoverage(BaseModel):
+    """Dataset-level evidence that a large golden set is behaviorally diverse."""
+
+    case_count: int = Field(ge=1)
+    unique_questions: int = Field(ge=1)
+    intent_counts: dict[str, int]
+    artifact_counts: dict[str, int]
+    timeframe_counts: dict[str, int]
+    tag_counts: dict[str, int]
+    approval_cases: int = Field(ge=0)
+    cache_cases: int = Field(ge=0)
+    adversarial_cases: int = Field(ge=0)
+
+
 class EvalReport(BaseModel):
     eval_run_id: str
     dataset_version: str
@@ -60,4 +74,5 @@ class EvalReport(BaseModel):
     total_cases: int = Field(ge=1)
     duration_ms: float = Field(ge=0)
     created_at: datetime
+    coverage: EvalCoverage
     results: list[EvalCaseResult]

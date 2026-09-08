@@ -10,7 +10,7 @@ from typing import Any
 from uuid import uuid4
 
 from app.agent.orchestrator import AurumAgent
-from app.evals.models import EvalCase, EvalCaseResult, EvalDimension, EvalReport
+from app.evals.models import EvalCase, EvalCaseResult, EvalCoverage, EvalDimension, EvalReport
 from app.models import RunResponse
 
 DIMENSION_WEIGHTS = {
@@ -21,7 +21,75 @@ DIMENSION_WEIGHTS = {
     "reuse_efficiency": 0.10,
 }
 CASE_PASS_THRESHOLD = 90.0
-MAX_EVAL_CASES = 50
+MIN_EVAL_CASES = 100
+MAX_EVAL_CASES = 200
+MIN_INTENT_COUNTS = {
+    "backtest_strategy": 40,
+    "query_market_data": 20,
+    "external_research": 10,
+    "other": 20,
+}
+MIN_SCENARIO_COUNTS = {
+    "approval": 10,
+    "cache": 8,
+    "adversarial": 15,
+    "daily": 20,
+    "hourly": 20,
+    "locale": 4,
+    "boundary": 8,
+}
+_CATEGORY_TAGS = {
+    "backtest_strategy": "backtest",
+    "query_market_data": "market",
+    "external_research": "research",
+    "other": "other",
+}
+_STANDARD_STAGES = {
+    "backtest": [
+        "route_intent",
+        "select_skill",
+        "build_plan",
+        "interpret_strategy",
+        "cache_lookup",
+        "inspect_market_data",
+        "validate_strategy_spec",
+        "run_backtest",
+        "summarize_result",
+    ],
+    "market": [
+        "route_intent",
+        "select_skill",
+        "build_plan",
+        "compile_market_query",
+        "cache_lookup",
+        "query_market_data",
+        "summarize_market_query",
+    ],
+    "research": [
+        "route_intent",
+        "select_skill",
+        "build_plan",
+        "compile_research_query",
+        "cache_lookup",
+        "approval_resume",
+        "search_external_knowledge",
+        "summarize_external_research",
+    ],
+    "general": [
+        "route_intent",
+        "select_skill",
+        "build_plan",
+        "compose_general_response",
+    ],
+    "rejected": ["route_intent", "policy_reject"],
+}
+_CACHE_HIT_STAGES = [
+    "route_intent",
+    "select_skill",
+    "build_plan",
+    "interpret_strategy",
+    "cache_lookup",
+]
 
 
 def load_eval_cases(path: Path) -> list[EvalCase]:
@@ -36,12 +104,88 @@ def load_eval_cases(path: Path) -> list[EvalCase]:
             if case.case_id in seen:
                 raise ValueError(f"评测集第 {line_number} 行存在重复 case_id：{case.case_id}")
             seen.add(case.case_id)
+            if not case.required_stages:
+                stages = (
+                    _CACHE_HIT_STAGES
+                    if case.cache_scenario == "exact_hit"
+                    else _STANDARD_STAGES[case.expected_artifact]
+                )
+                case = case.model_copy(update={"required_stages": stages})
             cases.append(case)
             if len(cases) > MAX_EVAL_CASES:
                 raise ValueError(f"单次评测最多允许 {MAX_EVAL_CASES} 个案例")
     if not cases:
         raise ValueError("评测集不能为空")
     return cases
+
+
+def evaluate_dataset_coverage(cases: list[EvalCase]) -> EvalCoverage:
+    """Build a deterministic, machine-readable coverage summary."""
+    intent_counts: dict[str, int] = {}
+    artifact_counts: dict[str, int] = {}
+    timeframe_counts: dict[str, int] = {}
+    tag_counts: dict[str, int] = {}
+    normalized_questions: set[str] = set()
+    for case in cases:
+        intent_counts[case.expected_intent] = intent_counts.get(case.expected_intent, 0) + 1
+        artifact_counts[case.expected_artifact] = artifact_counts.get(case.expected_artifact, 0) + 1
+        timeframe = case.expected_spec.get("timeframe")
+        if timeframe in {"1d", "1h"}:
+            timeframe_counts[timeframe] = timeframe_counts.get(timeframe, 0) + 1
+        for tag in case.tags:
+            tag_counts[tag] = tag_counts.get(tag, 0) + 1
+        normalized_questions.add(" ".join(case.question.casefold().split()))
+    return EvalCoverage(
+        case_count=len(cases),
+        unique_questions=len(normalized_questions),
+        intent_counts=dict(sorted(intent_counts.items())),
+        artifact_counts=dict(sorted(artifact_counts.items())),
+        timeframe_counts=dict(sorted(timeframe_counts.items())),
+        tag_counts=dict(sorted(tag_counts.items())),
+        approval_cases=sum(case.approval_scenario == "approve" for case in cases),
+        cache_cases=sum(case.cache_scenario == "exact_hit" for case in cases),
+        adversarial_cases=sum(case.expected_artifact == "rejected" for case in cases),
+    )
+
+
+def validate_dataset_coverage(cases: list[EvalCase]) -> EvalCoverage:
+    """Reject padded or one-dimensional datasets before running expensive cases."""
+    coverage = evaluate_dataset_coverage(cases)
+    failures: list[str] = []
+    if coverage.case_count < MIN_EVAL_CASES:
+        failures.append(f"案例总数 {coverage.case_count} < {MIN_EVAL_CASES}")
+    if coverage.unique_questions != coverage.case_count:
+        failures.append("存在忽略大小写和空白后的重复问题")
+    for intent, minimum in MIN_INTENT_COUNTS.items():
+        actual = coverage.intent_counts.get(intent, 0)
+        if actual < minimum:
+            failures.append(f"intent={intent} 覆盖 {actual} < {minimum}")
+    scenario_counts = {
+        "approval": coverage.approval_cases,
+        "cache": coverage.cache_cases,
+        "adversarial": coverage.adversarial_cases,
+        "daily": coverage.timeframe_counts.get("1d", 0),
+        "hourly": coverage.timeframe_counts.get("1h", 0),
+        "locale": coverage.tag_counts.get("locale", 0),
+        "boundary": coverage.tag_counts.get("boundary", 0),
+    }
+    for scenario, minimum in MIN_SCENARIO_COUNTS.items():
+        actual = scenario_counts[scenario]
+        if actual < minimum:
+            failures.append(f"scenario={scenario} 覆盖 {actual} < {minimum}")
+    for case in cases:
+        expected_tag = _CATEGORY_TAGS[case.expected_intent]
+        if expected_tag not in case.tags:
+            failures.append(f"{case.case_id} 缺少分类标签 {expected_tag}")
+        if case.expected_artifact == "rejected" and not {"safety", "rejection"}.issubset(case.tags):
+            failures.append(f"{case.case_id} 缺少 safety/rejection 对抗标签")
+        if case.approval_scenario == "approve" and "approval" not in case.tags:
+            failures.append(f"{case.case_id} 缺少 approval 标签")
+        if case.cache_scenario == "exact_hit" and "memory" not in case.tags:
+            failures.append(f"{case.case_id} 缺少 memory 标签")
+    if failures:
+        raise ValueError("评测集覆盖门禁失败：" + "；".join(failures))
+    return coverage
 
 
 def _normalized(value: Any) -> Any:
@@ -360,6 +504,7 @@ class EvalRunner:
         if not 0 <= threshold <= 100:
             raise ValueError("threshold 必须在 0 到 100 之间")
         cases = load_eval_cases(self.dataset_path)
+        coverage = validate_dataset_coverage(cases)
         started = perf_counter()
         results: list[EvalCaseResult] = []
         for case in cases:
@@ -397,6 +542,7 @@ class EvalRunner:
             total_cases=len(results),
             duration_ms=round((perf_counter() - started) * 1_000, 2),
             created_at=datetime.now(UTC),
+            coverage=coverage,
             results=results,
         )
         return report

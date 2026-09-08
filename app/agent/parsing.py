@@ -7,7 +7,7 @@ from typing import Literal
 
 _HOURLY_PATTERN = re.compile(
     r"(?:1\s*(?:小时|小時)(?:K\s*线|K\s*線|线|線)?|"
-    r"1\s*h(?:our)?(?:ly)?\b|小时线|小時線)",
+    r"1\s*h(?:our)?(?:ly)?(?![A-Za-z])|hourly(?![A-Za-z])|小时线|小時線)",
     re.IGNORECASE,
 )
 

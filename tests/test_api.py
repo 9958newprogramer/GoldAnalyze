@@ -119,13 +119,14 @@ def test_eval_api_runs_versioned_quality_gate():
     response = client.post("/api/evals/run")
 
     assert cases.status_code == 200
-    assert len(cases.json()) == 16
+    assert len(cases.json()) == 108
     assert response.status_code == 200
     payload = response.json()
-    assert payload["dataset_version"] == "v5"
+    assert payload["dataset_version"] == "v6"
     assert payload["passed"] is True
     assert payload["score"] == 100
-    assert payload["passed_cases"] == payload["total_cases"] == 16
+    assert payload["passed_cases"] == payload["total_cases"] == 108
+    assert payload["coverage"]["adversarial_cases"] == 16
 
 
 def test_external_tool_requires_explicit_one_time_approval():

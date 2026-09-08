@@ -34,6 +34,17 @@ async def test_rule_interpreter_accepts_compact_window_pair():
 
 
 @pytest.mark.asyncio
+async def test_rule_interpreter_accepts_shared_unit_window_pair():
+    result = await RuleBasedStrategyInterpreter().interpret(
+        "评估黄金日K的10日与30日均线交叉策略，手续费4基点。"
+    )
+
+    assert result.spec.fast_window == 10
+    assert result.spec.slow_window == 30
+    assert result.warnings == []
+
+
+@pytest.mark.asyncio
 async def test_rule_interpreter_accepts_traditional_basis_points():
     result = await RuleBasedStrategyInterpreter().interpret(
         "黃金1小時線，9小時均線上穿36小時均線，手續費2個基點，滑點1個基點。"
@@ -53,6 +64,20 @@ async def test_rule_interpreter_recognizes_hourly_k_suffix_regression():
     assert result.spec.timeframe == "1h"
     assert result.spec.fast_window == 20
     assert result.spec.slow_window == 60
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "黄金1h的5小时均线与20小时均线交叉策略。",
+        "黄金hourly行情上的6小时均线和24小时均线策略。",
+    ],
+)
+@pytest.mark.asyncio
+async def test_rule_interpreter_recognizes_ascii_hourly_before_chinese(question):
+    result = await RuleBasedStrategyInterpreter().interpret(question)
+
+    assert result.spec.timeframe == "1h"
 
 
 def test_strategy_rejects_invalid_window_relationship():

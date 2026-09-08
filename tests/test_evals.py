@@ -1,7 +1,9 @@
+import pytest
+
 from app.bootstrap import build_services
 from app.config import Settings
 from app.evals.models import EvalCase
-from app.evals.runner import evaluate_case, load_eval_cases
+from app.evals.runner import evaluate_case, load_eval_cases, validate_dataset_coverage
 
 
 async def test_golden_dataset_passes_and_is_persisted(tmp_path):
@@ -12,7 +14,10 @@ async def test_golden_dataset_passes_and_is_persisted(tmp_path):
 
     assert report.passed is True
     assert report.score == 100
-    assert report.passed_cases == report.total_cases == 16
+    assert report.passed_cases == report.total_cases == 108
+    assert report.coverage.adversarial_cases == 16
+    assert report.coverage.approval_cases == 12
+    assert report.coverage.cache_cases == 8
     assert services.eval_reports.latest() == report
 
 
@@ -36,9 +41,37 @@ async def test_eval_case_fails_when_expected_spec_differs(tmp_path):
     assert "expected=11" in result.failures[0]
 
 
-def test_golden_dataset_has_unique_bounded_cases():
+def test_golden_dataset_meets_diversity_contract():
+    services = build_services()
+    cases = load_eval_cases(services.settings.resolved_eval_dataset_path)
+    coverage = validate_dataset_coverage(cases)
+
+    assert len(cases) == 108
+    assert len({case.case_id for case in cases}) == len(cases)
+    assert coverage.unique_questions == 108
+    assert coverage.intent_counts == {
+        "backtest_strategy": 44,
+        "external_research": 12,
+        "other": 28,
+        "query_market_data": 24,
+    }
+    assert coverage.timeframe_counts == {"1d": 34, "1h": 34}
+
+
+def test_dataset_coverage_rejects_small_or_mislabeled_sets():
     services = build_services()
     cases = load_eval_cases(services.settings.resolved_eval_dataset_path)
 
-    assert len(cases) == 16
-    assert len({case.case_id for case in cases}) == len(cases)
+    with pytest.raises(ValueError, match="案例总数"):
+        validate_dataset_coverage(cases[:99])
+
+    research_index = next(
+        index for index, case in enumerate(cases) if case.approval_scenario == "approve"
+    )
+    mislabeled = list(cases)
+    case = mislabeled[research_index]
+    mislabeled[research_index] = case.model_copy(
+        update={"tags": [tag for tag in case.tags if tag != "approval"]}
+    )
+    with pytest.raises(ValueError, match="缺少 approval 标签"):
+        validate_dataset_coverage(mislabeled)

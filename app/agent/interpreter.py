@@ -48,15 +48,16 @@ class RuleBasedStrategyInterpreter:
 
     async def interpret(self, question: str) -> Interpretation:
         warnings: list[str] = []
-        compact_pair = re.search(
-            r"(?<![0-9])([0-9]{1,3})\s*[/／、-]\s*([0-9]{1,3})"
+        shared_unit_pair = re.search(
+            r"(?<![0-9])([0-9]{1,3})\s*(?:日|小时|小時)?"
+            r"\s*(?:与|和|及|[/／、-])\s*([0-9]{1,3})"
             r"\s*(?:日|小时|小時)?\s*(?:均线|均線|MA)",
             question,
             flags=re.IGNORECASE,
         )
         windows = (
-            [int(compact_pair.group(1)), int(compact_pair.group(2))]
-            if compact_pair
+            [int(shared_unit_pair.group(1)), int(shared_unit_pair.group(2))]
+            if shared_unit_pair
             else [
                 int(value)
                 for value in re.findall(

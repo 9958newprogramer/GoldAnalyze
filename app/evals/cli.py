@@ -30,6 +30,12 @@ async def _run(threshold: float, as_json: bool) -> int:
             f"[{gate}] dataset={report.dataset_version} score={report.score:.2f} "
             f"cases={report.passed_cases}/{report.total_cases} duration={report.duration_ms:.2f}ms"
         )
+        print(
+            "  coverage "
+            f"intents={report.coverage.intent_counts} "
+            f"adversarial={report.coverage.adversarial_cases} "
+            f"approval={report.coverage.approval_cases} cache={report.coverage.cache_cases}"
+        )
         for result in report.results:
             marker = "PASS" if result.passed else "FAIL"
             print(f"  {marker:<4} {result.case_id:<24} {result.score:>6.2f}")
