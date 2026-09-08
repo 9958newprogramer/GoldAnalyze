@@ -2,17 +2,21 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated
 
 import uvicorn
-from fastapi import FastAPI, Header, HTTPException, Query, Request
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, Header, HTTPException, Query, Request, Response, status
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from redis.exceptions import RedisError
 
 from app import __version__
 from app.approval import (
+    ApprovalBinding,
     ApprovalBindingError,
     ApprovalNotFoundError,
     ApprovalStateError,
@@ -24,14 +28,18 @@ from app.evals.models import EvalCase, EvalReport
 from app.evals.runner import load_eval_cases
 from app.mcp_client import MCPToolCatalog
 from app.models import (
+    AgentJob,
     ApprovalGrant,
     ApprovalRequest,
     CacheStats,
+    JobCreateRequest,
+    JobEvent,
     ResumeRunRequest,
     RunRequest,
     RunResponse,
     SkillDescriptor,
 )
+from app.storage import IdempotencyConflictError, InvalidJobTransitionError
 
 services = build_services()
 static_root = Path(__file__).resolve().parent / "static"
@@ -45,6 +53,7 @@ async def lifespan(_: FastAPI):
         yield
     finally:
         await services.mcp_clients.stop()
+        await services.job_broker.close()
 
 
 app = FastAPI(
@@ -100,6 +109,9 @@ async def health() -> dict[str, object]:
         "artifact_cache_enabled": services.artifacts.enabled,
         "artifact_cache_entries": services.artifacts.stats().active_entries,
         "artifact_cache_max_entries": services.artifacts.max_entries,
+        "async_job_transport": "redis-streams",
+        "async_job_stream": services.settings.job_stream_name,
+        "async_job_consumer_group": services.settings.job_consumer_group,
     }
 
 
@@ -141,6 +153,126 @@ async def run_eval(threshold: float = Query(default=90.0, ge=0, le=100)) -> Eval
 @app.post("/api/runs", response_model=RunResponse)
 async def create_run(payload: RunRequest) -> RunResponse:
     return await services.agent.run(payload.question, cache_policy=payload.cache_policy)
+
+
+def _validate_job_id(job_id: str) -> None:
+    if len(job_id) != 16 or any(character not in "0123456789abcdef" for character in job_id):
+        raise HTTPException(status_code=400, detail="无效的 Job ID")
+
+
+@app.post("/api/jobs", response_model=AgentJob, status_code=status.HTTP_202_ACCEPTED)
+async def create_job(
+    payload: JobCreateRequest,
+    response: Response,
+    idempotency_key: Annotated[
+        str | None,
+        Header(
+            alias="Idempotency-Key",
+            min_length=1,
+            max_length=128,
+            pattern=r"^[A-Za-z0-9._:-]+$",
+        ),
+    ] = None,
+) -> AgentJob:
+    try:
+        job, created = await services.job_submission.submit(
+            payload.question,
+            payload.cache_policy,
+            payload.max_attempts,
+            idempotency_key=idempotency_key,
+        )
+    except IdempotencyConflictError as exc:
+        raise HTTPException(status_code=409, detail="幂等键已绑定到不同请求") from exc
+    except RedisError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="任务已持久化，但 Redis 暂不可用；使用相同幂等键重试即可修复投递",
+        ) from exc
+    response.headers["Location"] = f"/api/jobs/{job.job_id}"
+    response.headers["X-AurumLab-Job-Created"] = str(created).lower()
+    return job
+
+
+@app.get("/api/jobs/{job_id}", response_model=AgentJob)
+async def get_job(job_id: str) -> AgentJob:
+    _validate_job_id(job_id)
+    job = services.jobs.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job 不存在")
+    return job
+
+
+@app.get("/api/jobs/{job_id}/events", response_model=list[JobEvent])
+async def get_job_events(
+    job_id: str,
+    after: int = Query(default=0, ge=0),
+) -> list[JobEvent]:
+    _validate_job_id(job_id)
+    if services.jobs.get(job_id) is None:
+        raise HTTPException(status_code=404, detail="Job 不存在")
+    return services.jobs.events_after(job_id, after)
+
+
+@app.delete("/api/jobs/{job_id}", response_model=AgentJob)
+async def cancel_job(job_id: str) -> AgentJob:
+    _validate_job_id(job_id)
+    try:
+        return services.jobs.request_cancel(job_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Job 不存在") from exc
+
+
+def _parse_last_event_id(value: str | None) -> int:
+    if value is None:
+        return 0
+    if not value.isdigit() or len(value) > 18:
+        raise HTTPException(status_code=400, detail="无效的 Last-Event-ID")
+    return int(value)
+
+
+@app.get("/api/jobs/{job_id}/stream")
+async def stream_job_events(
+    job_id: str,
+    request: Request,
+    last_event_id: Annotated[
+        str | None,
+        Header(alias="Last-Event-ID", max_length=18),
+    ] = None,
+) -> StreamingResponse:
+    _validate_job_id(job_id)
+    if services.jobs.get(job_id) is None:
+        raise HTTPException(status_code=404, detail="Job 不存在")
+    cursor = _parse_last_event_id(last_event_id)
+
+    async def generate():
+        nonlocal cursor
+        seconds_since_write = 0.0
+        while not await request.is_disconnected():
+            events = services.jobs.events_after(job_id, cursor)
+            for event in events:
+                cursor = event.event_id
+                data = json.dumps(event.model_dump(mode="json"), ensure_ascii=False)
+                yield f"id: {event.event_id}\nevent: {event.event_type}\ndata: {data}\n\n"
+                seconds_since_write = 0.0
+            job = services.jobs.get(job_id)
+            if job is None or (
+                job.status in services.jobs.terminal_statuses and cursor >= job.last_event_id
+            ):
+                return
+            await asyncio.sleep(services.settings.sse_poll_interval_seconds)
+            seconds_since_write += services.settings.sse_poll_interval_seconds
+            if seconds_since_write >= services.settings.sse_heartbeat_seconds:
+                yield ": heartbeat\n\n"
+                seconds_since_write = 0.0
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 def _approval_http_error(exc: Exception) -> HTTPException:
@@ -236,6 +368,64 @@ async def resume_run(run_id: str, payload: ResumeRunRequest) -> RunResponse:
         ApprovalBindingError,
     ) as exc:
         raise _approval_http_error(exc) from exc
+
+
+@app.post(
+    "/api/jobs/{job_id}/resume",
+    response_model=AgentJob,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def resume_job(job_id: str, payload: ResumeRunRequest) -> AgentJob:
+    _validate_job_id(job_id)
+    job = services.jobs.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job 不存在")
+    existing_grant = services.jobs.get_job_approval(job_id)
+    if job.status == "queued" and existing_grant is not None:
+        try:
+            await services.job_broker.initialize()
+            await services.job_broker.enqueue(job_id)
+            return job
+        except RedisError as exc:
+            raise HTTPException(
+                status_code=503, detail="Redis 暂不可用，可安全重试恢复请求"
+            ) from exc
+    if job.status != "waiting_approval" or job.run_id is None:
+        raise HTTPException(status_code=409, detail="Job 当前不等待审批")
+    pending = services.runs.get(job.run_id)
+    if pending is None or pending.approval is None or pending.plan is None:
+        raise HTTPException(status_code=409, detail="Job 缺少可恢复的审批上下文")
+    approval = pending.approval
+    binding = ApprovalBinding(
+        run_id=approval.run_id,
+        plan_id=approval.plan_id,
+        step_id=approval.step_id,
+        tool_name=approval.tool_name,
+        arguments_digest=approval.arguments_digest,
+        effect=approval.effect,
+        risk=approval.risk,
+        reason=approval.reason,
+    )
+    try:
+        consumed = services.approvals.consume(payload.approval_token, binding)
+        resumed = services.jobs.resume_after_approval(job_id, consumed)
+        await services.job_broker.initialize()
+        await services.job_broker.enqueue(job_id)
+        return resumed
+    except (
+        ApprovalNotFoundError,
+        ApprovalTokenError,
+        ApprovalStateError,
+        ApprovalBindingError,
+    ) as exc:
+        raise _approval_http_error(exc) from exc
+    except InvalidJobTransitionError as exc:
+        raise HTTPException(status_code=409, detail="Job 审批恢复状态冲突") from exc
+    except RedisError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="审批已安全消费且 Job 已排队；重试相同恢复请求即可修复投递",
+        ) from exc
 
 
 @app.get("/api/cache/stats", response_model=CacheStats)

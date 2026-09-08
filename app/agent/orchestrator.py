@@ -9,6 +9,13 @@ from time import perf_counter
 from typing import Any, Literal
 from uuid import uuid4
 
+from app.agent.checkpoint import (
+    AgentExecutionCancelled,
+    AgentExecutionSession,
+    AgentStageTimeout,
+    CancelProbe,
+    CheckpointSink,
+)
 from app.agent.interpreter import OpenAICompatibleStrategyInterpreter
 from app.agent.planner import BoundedPlanner, PlanRuntime
 from app.agent.router import IntentRouter
@@ -24,6 +31,7 @@ from app.domain.backtest import BacktestResult, run_sma_crossover
 from app.domain.market_data import Bar, MarketDataRepository, profile_bars
 from app.memory import ArtifactCache, CacheLookup, TaskFingerprint, build_task_fingerprint
 from app.models import (
+    AgentCheckpoint,
     AgentEvent,
     ApprovalRequest,
     ArtifactSnapshot,
@@ -219,11 +227,16 @@ class AurumAgent:
         message: str,
         action: Callable[[], Awaitable[Any]],
         tool_name: str | None = None,
+        session: AgentExecutionSession | None = None,
     ) -> Any:
+        if session is not None:
+            restored, output = session.restore(stage)
+            if restored:
+                return output
         runtime.begin(stage, tool_name)
         started = perf_counter()
         try:
-            output = await action()
+            output = await session.bounded(stage, action) if session is not None else await action()
             runtime.complete(stage)
             events.append(
                 AgentEvent(
@@ -234,6 +247,8 @@ class AurumAgent:
                     duration_ms=round((perf_counter() - started) * 1_000, 2),
                 )
             )
+            if session is not None:
+                session.persist(stage, output, runtime, events)
             return output
         except ApprovalRequired as exc:
             runtime.pause(stage)
@@ -275,7 +290,13 @@ class AurumAgent:
         stage: str,
         message: str,
         action: Callable[[], Any],
+        session: AgentExecutionSession | None = None,
     ) -> Any:
+        if session is not None:
+            restored, output = session.restore(stage)
+            if restored:
+                return output
+            session.before_step()
         runtime.begin(stage)
         started = perf_counter()
         try:
@@ -290,6 +311,8 @@ class AurumAgent:
                     duration_ms=round((perf_counter() - started) * 1_000, 2),
                 )
             )
+            if session is not None:
+                session.persist(stage, output, runtime, events)
             return output
         except Exception as exc:
             runtime.fail(stage)
@@ -311,7 +334,13 @@ class AurumAgent:
         runtime: PlanRuntime,
         task: TaskFingerprint,
         cache_policy: Literal["use", "refresh", "bypass"],
+        session: AgentExecutionSession | None = None,
     ) -> CacheLookup:
+        if session is not None:
+            restored, output = session.restore("cache_lookup")
+            if restored:
+                return output
+            session.before_step()
         runtime.begin("cache_lookup")
         started = perf_counter()
         try:
@@ -363,6 +392,8 @@ class AurumAgent:
                 )
             )
             runtime.complete("cache_lookup")
+            if session is not None:
+                session.persist("cache_lookup", lookup, runtime, events)
             return lookup
         except Exception:
             runtime.fail("cache_lookup")
@@ -397,6 +428,7 @@ class AurumAgent:
         runtime: PlanRuntime,
         gateway: ToolGateway,
         cache_policy: Literal["use", "refresh", "bypass"],
+        session: AgentExecutionSession | None = None,
     ) -> dict[str, Any]:
         interpretation = await self._timed_event(
             events,
@@ -404,13 +436,14 @@ class AurumAgent:
             "interpret_strategy",
             "已将用户问题编译为受约束的 StrategySpec",
             lambda: self.interpreter.interpret(question),
+            session=session,
         )
         task = build_task_fingerprint(
             "backtest_strategy",
             interpretation.spec,
             self.market_repository.data_version(interpretation.spec),
         )
-        lookup = self._lookup_cache(events, runtime, task, cache_policy)
+        lookup = self._lookup_cache(events, runtime, task, cache_policy, session)
         if lookup.info.status == "exact_hit" and lookup.source is not None:
             return self._cached_payload(lookup.source, lookup.info)
         inspected = await self._timed_event(
@@ -424,6 +457,7 @@ class AurumAgent:
                 spec=interpretation.spec,
             ),
             tool_name="inspect_market_data",
+            session=session,
         )
         bars: list[Bar] = inspected["bars"]
         profile: DataProfile = inspected["profile"]
@@ -439,6 +473,7 @@ class AurumAgent:
                 profile=profile,
             ),
             tool_name="validate_strategy_spec",
+            session=session,
         )
         result: BacktestResult = await self._timed_event(
             events,
@@ -452,6 +487,7 @@ class AurumAgent:
                 bars=bars,
             ),
             tool_name="run_backtest",
+            session=session,
         )
         summary = await self._timed_event(
             events,
@@ -460,6 +496,7 @@ class AurumAgent:
             "已根据结构化实验产物生成反馈",
             lambda: gateway.call("summarize_result", result=result, profile=profile),
             tool_name="summarize_result",
+            session=session,
         )
         return {
             "interpreter": interpretation.interpreter,
@@ -483,6 +520,7 @@ class AurumAgent:
         runtime: PlanRuntime,
         gateway: ToolGateway,
         cache_policy: Literal["use", "refresh", "bypass"],
+        session: AgentExecutionSession | None = None,
     ) -> dict[str, Any]:
         query = self._timed_sync_event(
             events,
@@ -490,6 +528,7 @@ class AurumAgent:
             "compile_market_query",
             "已将问题编译为受约束的 MarketQuerySpec",
             lambda: compile_market_query(question),
+            session=session,
         )
         repository_spec = StrategySpec(
             symbol=query.symbol,
@@ -502,7 +541,7 @@ class AurumAgent:
             query,
             self.market_repository.data_version(repository_spec),
         )
-        lookup = self._lookup_cache(events, runtime, task, cache_policy)
+        lookup = self._lookup_cache(events, runtime, task, cache_policy, session)
         if lookup.info.status == "exact_hit" and lookup.source is not None:
             return self._cached_payload(lookup.source, lookup.info)
         queried = await self._timed_event(
@@ -516,6 +555,7 @@ class AurumAgent:
                 query=query,
             ),
             tool_name="query_market_data",
+            session=session,
         )
         summary = await self._timed_event(
             events,
@@ -529,6 +569,7 @@ class AurumAgent:
                 profile=queried["profile"],
             ),
             tool_name="summarize_market_query",
+            session=session,
         )
         return {
             "interpreter": "deterministic-market-compiler",
@@ -550,6 +591,7 @@ class AurumAgent:
         runtime: PlanRuntime,
         gateway: ToolGateway,
         cache_policy: Literal["use", "refresh", "bypass"],
+        session: AgentExecutionSession | None = None,
     ) -> dict[str, Any]:
         spec = self._timed_sync_event(
             events,
@@ -557,13 +599,14 @@ class AurumAgent:
             "compile_research_query",
             "已生成有界的 ExternalResearchSpec",
             lambda: compile_external_research(question),
+            session=session,
         )
         task = build_task_fingerprint(
             "external_research",
             spec,
             f"provider-v1:{self.search_provider.name}",
         )
-        lookup = self._lookup_cache(events, runtime, task, cache_policy)
+        lookup = self._lookup_cache(events, runtime, task, cache_policy, session)
         if lookup.info.status == "exact_hit" and lookup.source is not None:
             return self._cached_payload(lookup.source, lookup.info)
         searched = await self._timed_event(
@@ -573,6 +616,7 @@ class AurumAgent:
             "已调用受治理的外部 Search Provider",
             lambda: gateway.call("search_external_knowledge", spec=spec),
             tool_name="search_external_knowledge",
+            session=session,
         )
         result = await self._timed_event(
             events,
@@ -585,6 +629,7 @@ class AurumAgent:
                 sources=searched["sources"],
             ),
             tool_name="summarize_external_research",
+            session=session,
         )
         warnings = [searched["warning"]] if searched["warning"] else []
         if self.search_provider.name == "unconfigured":
@@ -608,6 +653,7 @@ class AurumAgent:
         runtime: PlanRuntime,
         gateway: ToolGateway,
         cache_policy: Literal["use", "refresh", "bypass"],
+        session: AgentExecutionSession | None = None,
     ) -> dict[str, Any]:
         summary = await self._timed_event(
             events,
@@ -616,6 +662,7 @@ class AurumAgent:
             "已生成能力边界内的直接反馈",
             lambda: gateway.call("compose_general_response", question=question),
             tool_name="compose_general_response",
+            session=session,
         )
         return {
             "interpreter": "direct",
@@ -632,6 +679,30 @@ class AurumAgent:
         cache_policy: Literal["use", "refresh", "bypass"] = "use",
     ) -> RunResponse:
         return await self._execute(question, cache_policy=cache_policy)
+
+    async def run_checkpointed(
+        self,
+        question: str,
+        *,
+        job_id: str,
+        cache_policy: Literal["use", "refresh", "bypass"],
+        checkpoint_sink: CheckpointSink,
+        cancel_probe: CancelProbe,
+        stage_timeout_seconds: float,
+        checkpoint: AgentCheckpoint | None = None,
+        trusted_consumed_approval: ApprovalRequest | None = None,
+    ) -> RunResponse:
+        """Execute for a Worker, persisting after every completed Plan step."""
+        return await self._execute(
+            question,
+            cache_policy=cache_policy,
+            checkpoint=checkpoint,
+            checkpoint_job_id=job_id,
+            checkpoint_sink=checkpoint_sink,
+            cancel_probe=cancel_probe,
+            stage_timeout_seconds=stage_timeout_seconds,
+            trusted_consumed_approval=trusted_consumed_approval,
+        )
 
     async def resume(self, run_id: str, approval_token: str) -> RunResponse:
         pending = self.runs.get(run_id)
@@ -716,36 +787,49 @@ class AurumAgent:
         approval_token: str | None = None,
         prior_audit: list[dict[str, Any]] | None = None,
         expected_plan_id: str | None = None,
+        checkpoint: AgentCheckpoint | None = None,
+        checkpoint_job_id: str | None = None,
+        checkpoint_sink: CheckpointSink | None = None,
+        cancel_probe: CancelProbe | None = None,
+        stage_timeout_seconds: float = 30.0,
+        trusted_consumed_approval: ApprovalRequest | None = None,
     ) -> RunResponse:
+        if checkpoint is not None:
+            run_id = checkpoint.run_id
+            created_at = checkpoint.created_at
+            route_override = checkpoint.route
+            prior_audit = checkpoint.tool_audit
+            expected_plan_id = checkpoint.plan_id
         run_id = run_id or uuid4().hex[:12]
         created_at = created_at or datetime.now(UTC)
-        events: list[AgentEvent] = []
+        events: list[AgentEvent] = list(checkpoint.events) if checkpoint else []
         cache_task: TaskFingerprint | None = None
         cache_ttl: int | None = None
         plan: ExecutionPlan | None = None
         runtime: PlanRuntime | None = None
         route_started = perf_counter()
         route = route_override or await self.router.route(question)
-        events.append(
-            AgentEvent(
-                sequence=1,
-                stage="route_intent",
-                status="completed",
-                message=f"路由到 {route.intent}，置信度 {route.confidence:.2f}",
-                duration_ms=round((perf_counter() - route_started) * 1_000, 2),
-                details={
-                    "skill": route.skill,
-                    "action": route.action,
-                    "reason": route.reason,
-                    "scores": route.scores,
-                    "threat_categories": [item.category for item in route.threat_signals],
-                    "router": route.router,
-                    "needs_clarification": route.needs_clarification,
-                    "fallback_reason": route.fallback_reason,
-                    "resumed": route_override is not None,
-                },
+        if checkpoint is None:
+            events.append(
+                AgentEvent(
+                    sequence=1,
+                    stage="route_intent",
+                    status="completed",
+                    message=f"路由到 {route.intent}，置信度 {route.confidence:.2f}",
+                    duration_ms=round((perf_counter() - route_started) * 1_000, 2),
+                    details={
+                        "skill": route.skill,
+                        "action": route.action,
+                        "reason": route.reason,
+                        "scores": route.scores,
+                        "threat_categories": [item.category for item in route.threat_signals],
+                        "router": route.router,
+                        "needs_clarification": route.needs_clarification,
+                        "fallback_reason": route.fallback_reason,
+                        "resumed": route_override is not None,
+                    },
+                )
             )
-        )
 
         if route.action == "deny":
             events.append(
@@ -782,57 +866,68 @@ class AurumAgent:
             allowed_tools=set(skill.allowed_tools),
             max_calls=skill.max_tool_calls,
             audit_log=list(prior_audit or []),
+            calls=sum(
+                item.get("phase") == "authorization" and item.get("decision") == "allow"
+                for item in prior_audit or []
+            ),
         )
-        events.append(
-            AgentEvent(
-                sequence=2,
-                stage="select_skill",
-                status="completed",
-                message=f"已加载 {skill.name}@{skill.version} Tool Policy",
-                duration_ms=0,
-                details={
-                    "allowed_tools": skill.allowed_tools,
-                    "max_tool_calls": skill.max_tool_calls,
-                    "tool_risks": {
-                        name: {
-                            "effect": self.tools.get_definition(name).metadata.effect,
-                            "risk": self.tools.get_definition(name).metadata.risk,
-                            "requires_approval": self.tools.get_definition(
-                                name
-                            ).metadata.requires_approval,
-                        }
-                        for name in skill.allowed_tools
+        if checkpoint is None:
+            events.append(
+                AgentEvent(
+                    sequence=2,
+                    stage="select_skill",
+                    status="completed",
+                    message=f"已加载 {skill.name}@{skill.version} Tool Policy",
+                    duration_ms=0,
+                    details={
+                        "allowed_tools": skill.allowed_tools,
+                        "max_tool_calls": skill.max_tool_calls,
+                        "tool_risks": {
+                            name: {
+                                "effect": self.tools.get_definition(name).metadata.effect,
+                                "risk": self.tools.get_definition(name).metadata.risk,
+                                "requires_approval": self.tools.get_definition(
+                                    name
+                                ).metadata.requires_approval,
+                            }
+                            for name in skill.allowed_tools
+                        },
                     },
-                },
+                )
             )
-        )
 
         gateway: ToolGateway | None = None
+        session: AgentExecutionSession | None = None
         try:
             plan_started = perf_counter()
             try:
                 plan = self.planner.build(skill)
                 if expected_plan_id is not None and plan.plan_id != expected_plan_id:
                     raise ApprovalBindingError("plan changed after approval was requested")
-                runtime = PlanRuntime(plan)
-                events.append(
-                    AgentEvent(
-                        sequence=len(events) + 1,
-                        stage="build_plan",
-                        status="completed",
-                        message=(
-                            f"已生成并校验 {len(plan.steps)} 步 Bounded Plan，"
-                            f"计划调用 {plan.planned_tool_calls}/{plan.max_tool_calls} 个 Tool"
-                        ),
-                        duration_ms=round((perf_counter() - plan_started) * 1_000, 2),
-                        details={
-                            "plan_id": plan.plan_id,
-                            "planner": plan.planner,
-                            "steps": [step.step_id for step in plan.steps],
-                            "planned_tool_calls": plan.planned_tool_calls,
-                        },
-                    )
+                runtime = (
+                    PlanRuntime.restore(plan, checkpoint.completed_steps)
+                    if checkpoint is not None
+                    else PlanRuntime(plan)
                 )
+                if checkpoint is None:
+                    events.append(
+                        AgentEvent(
+                            sequence=len(events) + 1,
+                            stage="build_plan",
+                            status="completed",
+                            message=(
+                                f"已生成并校验 {len(plan.steps)} 步 Bounded Plan，"
+                                f"计划调用 {plan.planned_tool_calls}/{plan.max_tool_calls} 个 Tool"
+                            ),
+                            duration_ms=round((perf_counter() - plan_started) * 1_000, 2),
+                            details={
+                                "plan_id": plan.plan_id,
+                                "planner": plan.planner,
+                                "steps": [step.step_id for step in plan.steps],
+                                "planned_tool_calls": plan.planned_tool_calls,
+                            },
+                        )
+                    )
             except Exception as exc:
                 events.append(
                     AgentEvent(
@@ -869,8 +964,36 @@ class AurumAgent:
                 run_id=run_id,
                 plan_id=plan.plan_id,
                 approval_token=approval_token,
+                trusted_consumed_approval=trusted_consumed_approval,
                 on_approval_consumed=approval_consumed,
             )
+
+            if checkpoint_job_id is not None:
+                if checkpoint_sink is None or cancel_probe is None:
+                    raise ValueError("Checkpoint execution requires sink and cancel probe")
+                if checkpoint is not None:
+                    session = AgentExecutionSession.from_checkpoint(
+                        checkpoint,
+                        question=question,
+                        plan=plan,
+                        sink=checkpoint_sink,
+                        cancel_probe=cancel_probe,
+                        audit_provider=lambda: policy.audit_log,
+                        stage_timeout_seconds=stage_timeout_seconds,
+                    )
+                else:
+                    session = AgentExecutionSession(
+                        job_id=checkpoint_job_id,
+                        run_id=run_id,
+                        question=question,
+                        route=route,
+                        plan=plan,
+                        created_at=created_at,
+                        sink=checkpoint_sink,
+                        cancel_probe=cancel_probe,
+                        audit_provider=lambda: policy.audit_log,
+                        stage_timeout_seconds=stage_timeout_seconds,
+                    )
 
             workflows = {
                 "backtest_strategy": self._run_backtest_workflow,
@@ -879,7 +1002,7 @@ class AurumAgent:
                 "other": self._run_general_workflow,
             }
             payload = await workflows[route.intent](
-                question, events, runtime, gateway, cache_policy
+                question, events, runtime, gateway, cache_policy, session
             )
             cache_task = payload.pop("_cache_task", None)
             cache_ttl = payload.pop("_cache_ttl", None)
@@ -934,7 +1057,13 @@ class AurumAgent:
                 approval=exc.approval,
                 created_at=created_at,
             )
-        except (ApprovalTokenError, ApprovalStateError, ApprovalBindingError):
+        except (
+            ApprovalTokenError,
+            ApprovalStateError,
+            ApprovalBindingError,
+            AgentExecutionCancelled,
+            AgentStageTimeout,
+        ):
             raise
         except Exception as exc:  # noqa: BLE001 -- outer Agent boundary must fail closed
             if runtime is not None:

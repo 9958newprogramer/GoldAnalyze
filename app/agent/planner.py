@@ -115,6 +115,20 @@ class PlanRuntime:
     def __post_init__(self) -> None:
         if not self.plan.validated:
             raise PlanExecutionError("拒绝执行未经验证的 plan")
+        expected_prefix = [step.step_id for step in self.plan.steps[: self._cursor]]
+        if self._completed != expected_prefix:
+            raise PlanExecutionError("Checkpoint completed_steps 不是当前 Plan 的合法前缀")
+        if self._cursor < 0 or self._cursor > len(self.plan.steps):
+            raise PlanExecutionError("Checkpoint cursor 超出 Plan 边界")
+
+    @classmethod
+    def restore(cls, plan: ExecutionPlan, completed_steps: list[str]) -> PlanRuntime:
+        """Resume only from a validated, contiguous completed-step prefix."""
+        return cls(
+            plan=plan,
+            _cursor=len(completed_steps),
+            _completed=list(completed_steps),
+        )
 
     def begin(self, step_id: str, tool_name: str | None = None) -> None:
         if self._active is not None:

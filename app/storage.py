@@ -11,7 +11,7 @@ from typing import Any, ClassVar, Literal
 from uuid import uuid4
 
 from app.evals.models import EvalReport
-from app.models import AgentCheckpoint, AgentJob, JobEvent, RunResponse
+from app.models import AgentCheckpoint, AgentJob, ApprovalRequest, JobEvent, RunResponse
 
 
 def _connect(path: Path) -> sqlite3.Connection:
@@ -112,6 +112,13 @@ class JobRepository:
                     attempts INTEGER NOT NULL,
                     error_code TEXT NOT NULL,
                     error_message TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(job_id) REFERENCES agent_jobs(job_id) ON DELETE CASCADE
+                );
+                CREATE TABLE IF NOT EXISTS job_approval_grants (
+                    job_id TEXT PRIMARY KEY,
+                    approval_id TEXT NOT NULL UNIQUE,
+                    payload TEXT NOT NULL,
                     created_at TEXT NOT NULL,
                     FOREIGN KEY(job_id) REFERENCES agent_jobs(job_id) ON DELETE CASCADE
                 );
@@ -330,7 +337,9 @@ class JobRepository:
                 raise KeyError("job not found")
             if row["status"] in self.terminal_statuses:
                 return self._job(row)
-            status = "cancelled" if row["status"] == "queued" else "cancelling"
+            status = (
+                "cancelled" if row["status"] in {"queued", "waiting_approval"} else "cancelling"
+            )
             finished_at = now.isoformat() if status == "cancelled" else None
             connection.execute(
                 """
@@ -380,6 +389,33 @@ class JobRepository:
                 ),
             )
 
+    def save_checkpoint_and_event(self, checkpoint: AgentCheckpoint) -> int:
+        """Atomically publish a checkpoint and its observable step event."""
+        step_id = checkpoint.completed_steps[-1]
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                """
+                INSERT INTO agent_checkpoints(job_id, payload, updated_at) VALUES (?, ?, ?)
+                ON CONFLICT(job_id) DO UPDATE SET payload = excluded.payload,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    checkpoint.job_id,
+                    checkpoint.model_dump_json(),
+                    checkpoint.updated_at.isoformat(),
+                ),
+            )
+            return self._append_event(
+                connection,
+                checkpoint.job_id,
+                "step_completed",
+                "running",
+                f"步骤 {step_id} 已完成并保存 Checkpoint",
+                {"step_id": step_id},
+                now=checkpoint.updated_at,
+            )
+
     def get_checkpoint(self, job_id: str) -> AgentCheckpoint | None:
         with self.connect() as connection:
             row = connection.execute(
@@ -408,6 +444,100 @@ class JobRepository:
             )
             for row in rows
         ]
+
+    def append_checkpoint_restored(self, job_id: str, completed_steps: list[str]) -> int:
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT status FROM agent_jobs WHERE job_id = ?", (job_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError("job not found")
+            return self._append_event(
+                connection,
+                job_id,
+                "checkpoint_restored",
+                row["status"],
+                "Worker 已从持久化 Checkpoint 恢复",
+                {"completed_steps": completed_steps},
+            )
+
+    def transition_waiting_approval(self, job_id: str, worker_id: str, run_id: str) -> AgentJob:
+        now = _utc_now()
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            changed = connection.execute(
+                """
+                UPDATE agent_jobs SET status = 'waiting_approval', run_id = ?,
+                    lease_owner = NULL, lease_expires_at = NULL, updated_at = ?
+                WHERE job_id = ? AND status = 'running' AND lease_owner = ?
+                """,
+                (run_id, now.isoformat(), job_id, worker_id),
+            ).rowcount
+            if changed != 1:
+                raise InvalidJobTransitionError("waiting transition lost its lease")
+            self._append_event(
+                connection,
+                job_id,
+                "approval_required",
+                "waiting_approval",
+                "Agent 等待人工审批，受控 Tool 尚未执行",
+                {"run_id": run_id},
+                now=now,
+            )
+            row = connection.execute(
+                "SELECT * FROM agent_jobs WHERE job_id = ?", (job_id,)
+            ).fetchone()
+        return self._job(row)
+
+    def resume_after_approval(self, job_id: str, approval: ApprovalRequest) -> AgentJob:
+        if approval.status != "consumed":
+            raise InvalidJobTransitionError("only consumed approvals can resume a Job")
+        now = _utc_now()
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM agent_jobs WHERE job_id = ?", (job_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError("job not found")
+            if row["status"] != "waiting_approval" or row["run_id"] != approval.run_id:
+                raise InvalidJobTransitionError("Job is not waiting for this approval")
+            connection.execute(
+                """
+                INSERT INTO job_approval_grants(job_id, approval_id, payload, created_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (job_id, approval.approval_id, approval.model_dump_json(), now.isoformat()),
+            )
+            connection.execute(
+                """
+                UPDATE agent_jobs SET status = 'queued', attempts = MAX(attempts - 1, 0),
+                    updated_at = ?
+                WHERE job_id = ? AND status = 'waiting_approval'
+                """,
+                (now.isoformat(), job_id),
+            )
+            self._append_event(
+                connection,
+                job_id,
+                "approval_resumed",
+                "queued",
+                "人工审批已原子消费，任务重新入队",
+                {"approval_id": approval.approval_id},
+                now=now,
+            )
+            updated = connection.execute(
+                "SELECT * FROM agent_jobs WHERE job_id = ?", (job_id,)
+            ).fetchone()
+        return self._job(updated)
+
+    def get_job_approval(self, job_id: str) -> ApprovalRequest | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT payload FROM job_approval_grants WHERE job_id = ?", (job_id,)
+            ).fetchone()
+        return ApprovalRequest.model_validate_json(row[0]) if row else None
 
     def transition_terminal(
         self,

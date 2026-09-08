@@ -69,6 +69,7 @@ class JobEvent(BaseModel):
         "job_started",
         "step_completed",
         "approval_required",
+        "approval_resumed",
         "retry_scheduled",
         "cancel_requested",
         "job_completed",

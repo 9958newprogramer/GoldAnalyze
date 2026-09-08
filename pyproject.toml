@@ -33,6 +33,7 @@ aurumlab = "app.main:run"
 aurumlab-mcp = "app.mcp_server:main"
 aurumlab-mcp-tools = "app.mcp_provider:main"
 aurumlab-eval = "app.evals.cli:main"
+aurumlab-worker = "app.jobs.cli:main"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

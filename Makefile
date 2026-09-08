@@ -1,6 +1,6 @@
 PYTHON ?= python3.12
 
-.PHONY: install run mcp eval demo-memory test lint verify
+.PHONY: install run worker mcp eval demo-memory test lint verify
 
 install:
 	$(PYTHON) -m venv .venv
@@ -8,6 +8,9 @@ install:
 
 run:
 	.venv/bin/aurumlab
+
+worker:
+	.venv/bin/aurumlab-worker
 
 mcp:
 	.venv/bin/aurumlab-mcp

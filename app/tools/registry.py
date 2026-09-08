@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hmac
 import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -10,6 +11,7 @@ from typing import Any, Literal
 
 from app.approval import (
     ApprovalBinding,
+    ApprovalBindingError,
     ApprovalRepository,
     ApprovalRequired,
     arguments_digest,
@@ -207,6 +209,7 @@ class ToolGateway:
         run_id: str | None = None,
         plan_id: str | None = None,
         approval_token: str | None = None,
+        trusted_consumed_approval: ApprovalRequest | None = None,
         on_approval_consumed: Callable[[ApprovalRequest], None] | None = None,
     ):
         self.registry = registry
@@ -215,6 +218,7 @@ class ToolGateway:
         self.run_id = run_id
         self.plan_id = plan_id
         self.approval_token = approval_token
+        self.trusted_consumed_approval = trusted_consumed_approval
         self.on_approval_consumed = on_approval_consumed
         self.consumed_approval: ApprovalRequest | None = None
         self._request_memory: dict[tuple[str, str], Any] = {}
@@ -270,17 +274,17 @@ class ToolGateway:
                 decision=decision,
                 arguments=kwargs,
             )
-            if self.approval_token is None:
+            if self.approval_token is None and self.trusted_consumed_approval is None:
                 approval = approvals.request(binding)
                 self.policy.record(
                     decision,
                     approval_id=approval.approval_id,
                 )
                 raise ApprovalRequired(approval)
-            consumed = approvals.consume(
-                self.approval_token,
-                binding,
-            )
+            if self.trusted_consumed_approval is not None:
+                consumed = self._validate_trusted_approval(approvals, binding)
+            else:
+                consumed = approvals.consume(self.approval_token or "", binding)
             self.consumed_approval = consumed
             approval_id = consumed.approval_id
             authorization_reason = "human_approval_consumed"
@@ -352,3 +356,37 @@ class ToolGateway:
                 ),
             ),
         )
+
+    def _validate_trusted_approval(
+        self,
+        approvals: ApprovalRepository,
+        binding: ApprovalBinding,
+    ) -> ApprovalRequest:
+        trusted = self.trusted_consumed_approval
+        if trusted is None:
+            raise ApprovalBindingError("trusted approval is missing")
+        persisted = approvals.get(trusted.approval_id)
+        expected = (
+            binding.run_id,
+            binding.plan_id,
+            binding.step_id,
+            binding.tool_name,
+            binding.arguments_digest,
+            binding.effect,
+            binding.risk,
+        )
+        actual = (
+            persisted.run_id,
+            persisted.plan_id,
+            persisted.step_id,
+            persisted.tool_name,
+            persisted.arguments_digest,
+            persisted.effect,
+            persisted.risk,
+        )
+        if persisted.status != "consumed" or not all(
+            hmac.compare_digest(str(left), str(right))
+            for left, right in zip(expected, actual, strict=True)
+        ):
+            raise ApprovalBindingError("consumed approval does not match this Tool call")
+        return persisted

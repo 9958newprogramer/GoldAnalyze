@@ -84,6 +84,18 @@ class Settings:
         "RESEARCH_CACHE_TTL_SECONDS", 900, 5, 86_400
     )
     approval_ttl_seconds: int = _bounded_int_from_env("APPROVAL_TTL_SECONDS", 300, 30, 3_600)
+    redis_url: str = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
+    job_stream_name: str = os.getenv("JOB_STREAM_NAME", "aurumlab:jobs:v1")
+    job_consumer_group: str = os.getenv("JOB_CONSUMER_GROUP", "aurumlab-workers-v1")
+    job_lease_seconds: int = _bounded_int_from_env("JOB_LEASE_SECONDS", 60, 5, 600)
+    job_stage_timeout_seconds: float = _bounded_float_from_env(
+        "JOB_STAGE_TIMEOUT_SECONDS", 30.0, 0.05, 300.0
+    )
+    job_reclaim_idle_ms: int = _bounded_int_from_env("JOB_RECLAIM_IDLE_MS", 60_000, 1_000, 600_000)
+    sse_poll_interval_seconds: float = _bounded_float_from_env(
+        "SSE_POLL_INTERVAL_SECONDS", 0.25, 0.01, 5.0
+    )
+    sse_heartbeat_seconds: float = _bounded_float_from_env("SSE_HEARTBEAT_SECONDS", 10.0, 0.1, 60.0)
     cache_semantic_threshold: float = _bounded_float_from_env(
         "CACHE_SEMANTIC_THRESHOLD", 0.82, 0.5, 1.0
     )
