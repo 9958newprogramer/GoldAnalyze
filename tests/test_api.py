@@ -19,6 +19,7 @@ def test_health_and_home_are_available(client):
 
     assert health.status_code == 200
     assert health.json()["status"] == "ok"
+    assert health.json()["version"] == "1.0.0"
     assert health.json()["skills_count"] == 5
     assert health.json()["router"].startswith("governed-llm-router")
     assert health.json()["planner"].startswith("deterministic-skill-planner")

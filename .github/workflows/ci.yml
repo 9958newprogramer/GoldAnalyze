@@ -18,7 +18,7 @@ jobs:
     timeout-minutes: 15
     services:
       redis:
-        image: redis:8.2-alpine
+        image: redis:8.2.9-alpine
         ports:
           - 6379:6379
         options: >-
@@ -46,3 +46,36 @@ jobs:
 
       - name: Run lint, tests, Redis integration, and 100+ Agent eval gate
         run: make verify
+
+  container-smoke:
+    needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Validate Compose model
+        run: docker compose config --quiet
+
+      - name: Build non-root application image
+        run: docker build --tag aurumlab:1.0.0 .
+
+      - name: Start full stack and wait for health checks
+        run: docker compose up -d --no-build --wait
+
+      - name: Verify API, Worker, and offline Agent evidence
+        run: |
+          curl --fail --silent --show-error http://127.0.0.1:8010/api/health
+          docker compose exec -T api python scripts/demo_resume.py \
+            --skip-eval --output /tmp/resume-evidence.json
+
+      - name: Collect diagnostics after failure
+        if: failure()
+        run: docker compose ps && docker compose logs --no-color --tail=200
+
+      - name: Stop stack
+        if: always()
+        run: docker compose down --volumes

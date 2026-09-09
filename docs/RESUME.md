@@ -63,12 +63,19 @@
 - 在事故复盘 Skill 中真实消费动态发现的 `mcp__runtime__profile_text`；远端 Tool 继续通过 Schema Pin、Prompt Injection 检查、Per-Skill Allowlist、五次预算、人工审批和完整 Audit，并覆盖同步、异步 Checkpoint 与 `MCP → Agent → MCP` 调用路径。
 - 增加高置信凭证检测与数据最小化：同步请求在零 Tool 调用时拒绝并脱敏持久化文本，异步 Job 在落库/入队前拒绝；Trace、Audit、Checkpoint 与 Redis 均不保存原始凭证。
 
+## v1.0c 新增的可写要点
+
+- 使用统一 Docker Compose 编排 API、Redis Streams Worker、Redis、OpenTelemetry Collector 与 Jaeger；API/Worker 复用精确依赖锁定的非 root 镜像，根文件系统只读、Capabilities 全部移除，所有宿主机端口仅绑定 loopback。
+- 增加机器可读求职证据脚本，一次执行覆盖零 Tool 安全拒绝、MCP 人工审批恢复、非金融 Incident Artifact、exact-hit 跳过五次 Tool、OTel 快照和 120 条 Eval，并明确记录离线降级与单用户边界。
+- GitHub Actions 在 Python/Redis 质量门禁后继续执行 Compose 校验、镜像构建、全栈 healthcheck 与容器内 smoke；当前仓库无远程运行记录，不把 CI 配置冒充为云端绿色结果。
+- 完成 v1.0 浏览器演示验收和可追问的四条项目描述；最终简历成稿与指标证据见 [`RESUME_METRICS.md`](RESUME_METRICS.md)。
+
 ## 面试时主动强调
 
 - 黄金仅用作有确定性输入输出的工具场景，工程重点是 Agent 的路由、能力边界、协议暴露、治理、可观测与评测。
 - 与 AgentForge 的区别：AgentForge 证明 Agentic RAG；AurumLab 证明“识别意图—选择 Skill—受控调用 Tool—生成 Artifact—评测与复用”的执行系统。
 - LLM 负责语义理解，代码负责安全预检、类型校验、Skill 映射和 Tool 权限；规则 Router 仅承担可观测的故障降级。
 
-## 下一版本增量表述（尚不可作为已完成能力）
+## 最终简历版本
 
-v1.0c 仍需完成统一 Docker Compose、自动化演示与最终指标报告。在对应版本验证前不能把“一键容器化运行”或最终测试数字写成已完成。
+直接使用 [`RESUME_METRICS.md`](RESUME_METRICS.md) 中的四条成稿；项目数字发生变化时，先运行 `make release-check`，再同步更新简历，避免写入不能复现的旧指标。

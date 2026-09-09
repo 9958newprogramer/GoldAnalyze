@@ -8,7 +8,7 @@ AurumLab 的主语是 Agent 工程，不是黄金策略：
 
 这与 AgentForge 形成互补：AgentForge 重点展示 Agentic RAG 和知识库工作流；AurumLab 重点展示意图路由、Skill/MCP、工具治理、确定性任务执行、降级策略和自动评测。
 
-## v1.0b 运行架构
+## v1.0 运行架构
 
 ```text
 Web / HTTP / MCP ── sync ───────────────────────────────┐
@@ -136,7 +136,7 @@ EvalReportRepository → CLI exit code / API / Web panel
 
 ## 威胁模型
 
-| 边界 | 风险 | v1.0b 控制 |
+| 边界 | 风险 | v1.0 控制 |
 |---|---|---|
 | HTTP/MCP 输入 | 超长输入、Prompt Injection、破坏指令 | 长度校验；Tool 前威胁预检；fail closed |
 | 路由、Plan 与 Skill | 误路由、乱序或越权计划 | Pydantic 枚举；服务端 Skill 映射；Plan Validator/Runtime；Per-Skill Allowlist 与预算 |
@@ -232,6 +232,14 @@ EvalReportRepository → CLI exit code / API / Web panel
 - 自然语言编译为有界 `IncidentSpec`，确定性生成风险等级、证据和只读行动项，根因保持未验证。
 - 实际消费动态发现的 MCP Tool，并复用审批、预算、Audit、Artifact Memory、Checkpoint、SSE 与 Trace。
 - Golden Set v7 扩展到 120 条，其中 12 条事故复盘均执行真实 MCP 审批恢复。
+
+### v1.0c（已完成：招聘展示与部署证据）
+
+- 统一 Compose 编排 API、Worker、Redis、Collector 和 Jaeger；应用镜像以非 root、只读根文件系统、最小 capabilities 与 loopback 端口运行。
+- 生产依赖精确锁定，显式 `APP_PROJECT_ROOT` 解决非 editable wheel 启动时的 Skill/Eval 资源定位，并以全新虚拟环境 smoke 验证。
+- GitHub Actions 在质量门禁后构建真实镜像、等待完整栈 healthcheck，并在容器内执行代表性 Agent 证据脚本。
+- `demo_resume.py` 一键生成脱敏机器可读证据，覆盖拒绝、行情、MCP 审批恢复、Incident Artifact、exact hit、Trace/Metrics 和 120 条 Eval。
+- 完成浏览器真实页面验收、求职指标表、四条简历成稿、面试展开问题和真实性边界。
 
 ## 面试演示主线
 

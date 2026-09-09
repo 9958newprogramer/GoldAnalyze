@@ -1,0 +1,116 @@
+name: aurumlab
+
+x-app-common: &app-common
+  image: aurumlab:1.0.0
+  build:
+    context: .
+    dockerfile: Dockerfile
+  environment: &app-environment
+    APP_PROJECT_ROOT: /app
+    APP_DATABASE_PATH: /app/var/aurumlab.db
+    EVAL_DATASET_PATH: /app/evals/golden.v7.jsonl
+    REDIS_URL: redis://redis:6379/0
+    REDIS_PROTOCOL: "2"
+    OTEL_EXPORTER: otlp
+    OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+  volumes:
+    - aurumlab-state:/app/var
+  init: true
+  read_only: true
+  tmpfs:
+    - /tmp:size=64m,mode=1777
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  restart: unless-stopped
+
+services:
+  redis:
+    image: redis:8.2.9-alpine
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - aurumlab-redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+  jaeger:
+    image: cr.jaegertracing.io/jaegertracing/jaeger:2.20.0
+    ports:
+      - "127.0.0.1:16686:16686"
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.160.0
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ./otel-collector.yaml:/etc/otelcol/config.yaml:ro
+    ports:
+      - "127.0.0.1:4318:4318"
+      - "127.0.0.1:9464:9464"
+    depends_on:
+      - jaeger
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+  api:
+    <<: *app-common
+    environment:
+      <<: *app-environment
+      APP_HOST: 0.0.0.0
+      APP_PORT: "8010"
+      OTEL_SERVICE_NAME: aurumlab-api
+    ports:
+      - "127.0.0.1:8010:8010"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8010/api/health', timeout=2).read()",
+        ]
+      interval: 10s
+      timeout: 3s
+      start_period: 15s
+      retries: 5
+    depends_on:
+      redis:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+
+  worker:
+    <<: *app-common
+    command: ["aurumlab-worker"]
+    environment:
+      <<: *app-environment
+      OTEL_SERVICE_NAME: aurumlab-worker
+    healthcheck:
+      test: ["CMD", "python", "scripts/worker_health.py"]
+      interval: 10s
+      timeout: 3s
+      start_period: 10s
+      retries: 5
+    depends_on:
+      api:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+
+volumes:
+  aurumlab-state:
+  aurumlab-redis:

@@ -4,7 +4,7 @@ AurumLab 是一个**面向 Agent 开发求职**的可运行作品集项目。黄
 
 > 只做研究与历史实验，不连接实盘，不执行用户提供的 Python、SQL 或 Shell，不构成投资建议。
 
-## v1.0b 已实现的闭环
+## v1.0 已实现的闭环
 
 ```mermaid
 flowchart LR
@@ -120,6 +120,29 @@ python3.12 -m venv .venv
 ```
 
 统一入口为 `POST /api/runs`。响应包含路由决策、选中的 Skill、已验证的 `ExecutionPlan`、任务规格、领域产物、Agent Event、Tool Audit、`cache_status`、来源 Run ID 和可再次读取的 Run ID。`cache_policy` 支持 `use`（默认）、`refresh` 和 `bypass`。
+
+## Docker 一键运行
+
+统一 [`compose.yaml`](compose.yaml) 会构建同一 `aurumlab:1.0.0` 非 root 镜像，并启动 API、Redis Streams Worker、Redis、OpenTelemetry Collector 与 Jaeger：
+
+```bash
+make stack-up
+# API / Web: http://127.0.0.1:8010
+# Jaeger:   http://127.0.0.1:16686
+# Metrics:  http://127.0.0.1:9464/metrics
+make stack-down
+```
+
+API 与 Worker 共享持久化 SQLite volume，代码文件系统只读、`cap_drop=ALL`、启用 `no-new-privileges`，所有公开端口只绑定 loopback。Redis Stream 仍只传 Job ID；跨进程 Trace 通过 SQLite 中的 W3C Context 接续。生产依赖由 [`requirements.lock`](requirements.lock) 固定，镜像和两个应用服务都有 healthcheck。
+
+本机快速生成完整求职证据包：
+
+```bash
+make demo-resume       # 含 120 条 Eval，写入 var/resume-evidence.json
+make demo-resume-fast  # 跳过 Eval，只验证代表性 Agent 链路
+```
+
+GitHub Actions 的 `container-smoke` Job 会实际校验 Compose、构建镜像、等待完整栈健康，并在容器内执行快速证据脚本。部署结构、安全取舍和本地证据边界见 [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)。
 
 ## Redis Streams 异步任务与 Checkpoint
 
@@ -345,6 +368,6 @@ tests/
 docs/
 ```
 
-v1.0b 在 v0.9 可观测与 v0.8 异步执行底座上，补齐了真正消费动态 MCP Tool 的非金融 Skill 和 120 条 v7 评测。详见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)、[`docs/OBSERVABILITY.md`](docs/OBSERVABILITY.md)、[`docs/ASYNC_RUNTIME.md`](docs/ASYNC_RUNTIME.md)、[`docs/APPROVALS.md`](docs/APPROVALS.md)、[`docs/MCP_CLIENT.md`](docs/MCP_CLIENT.md)、[`docs/INCIDENT_SKILL.md`](docs/INCIDENT_SKILL.md)、[`docs/ARTIFACT_MEMORY.md`](docs/ARTIFACT_MEMORY.md) 与 [`docs/RESUME.md`](docs/RESUME.md)。
+v1.0 在 v0.9 可观测与 v0.8 异步执行底座上，补齐了真正消费动态 MCP Tool 的非金融 Skill、120 条 v7 评测、统一容器栈和机器可读演示证据。详见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)、[`docs/OBSERVABILITY.md`](docs/OBSERVABILITY.md)、[`docs/ASYNC_RUNTIME.md`](docs/ASYNC_RUNTIME.md)、[`docs/APPROVALS.md`](docs/APPROVALS.md)、[`docs/MCP_CLIENT.md`](docs/MCP_CLIENT.md)、[`docs/INCIDENT_SKILL.md`](docs/INCIDENT_SKILL.md)、[`docs/ARTIFACT_MEMORY.md`](docs/ARTIFACT_MEMORY.md)、[`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) 与 [`docs/RESUME_METRICS.md`](docs/RESUME_METRICS.md)。
 
 持续迭代的当前状态、验收证据、下一步和掉线恢复方式，以 [`docs/PROGRESS.md`](docs/PROGRESS.md) 为唯一进度真相源。

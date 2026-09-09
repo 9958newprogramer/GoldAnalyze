@@ -1,0 +1,106 @@
+{
+  "schema_version": "resume-evidence-v1",
+  "generated_at": "2026-09-09T02:44:51.527606+00:00",
+  "project_version": "1.0.0",
+  "passed": true,
+  "checks": {
+    "dangerous_prompt_rejected_before_tools": true,
+    "deterministic_market_artifact_completed": true,
+    "mcp_tool_required_human_approval": true,
+    "incident_artifact_completed_after_resume": true,
+    "mcp_tool_executed_through_governance": true,
+    "artifact_exact_hit_skipped_all_tools": true,
+    "telemetry_contains_no_prompts_or_tokens": true,
+    "golden_set_quality_gate_passed": true
+  },
+  "runtime_evidence": {
+    "skills": 5,
+    "market_tool_executions": 2,
+    "incident_tool_executions": 5,
+    "incident_mcp_tool_source": "mcp",
+    "incident_severity": "SEV-2",
+    "incident_root_cause_status": "unverified",
+    "cache_saved_tool_calls": 5,
+    "observed_spans": 41,
+    "observed_metric_series": 56
+  },
+  "eval_evidence": {
+    "dataset_version": "v7",
+    "passed": true,
+    "score": 100.0,
+    "passed_cases": 120,
+    "total_cases": 120,
+    "coverage": {
+      "case_count": 120,
+      "unique_questions": 120,
+      "intent_counts": {
+        "backtest_strategy": 44,
+        "external_research": 12,
+        "incident_review": 12,
+        "other": 28,
+        "query_market_data": 24
+      },
+      "artifact_counts": {
+        "backtest": 44,
+        "general": 12,
+        "incident": 12,
+        "market": 24,
+        "rejected": 16,
+        "research": 12
+      },
+      "timeframe_counts": {
+        "1d": 34,
+        "1h": 34
+      },
+      "tag_counts": {
+        "alias": 2,
+        "approval": 24,
+        "architecture": 2,
+        "backtest": 44,
+        "boundary": 17,
+        "capability": 4,
+        "capital": 5,
+        "compact": 4,
+        "comparison": 1,
+        "cost": 10,
+        "daily": 34,
+        "date-range": 7,
+        "defaults": 1,
+        "destruction": 7,
+        "exact-hit": 8,
+        "freshness": 7,
+        "governance": 3,
+        "help": 3,
+        "hourly": 34,
+        "incident": 12,
+        "limit": 20,
+        "locale": 6,
+        "ma-alias": 3,
+        "macro": 6,
+        "market": 24,
+        "memory": 8,
+        "non-financial": 12,
+        "other": 28,
+        "parser": 36,
+        "percentage": 5,
+        "policy": 1,
+        "prompt-injection": 6,
+        "regression": 1,
+        "rejection": 16,
+        "research": 12,
+        "safety": 17,
+        "secret": 6,
+        "structured-artifact": 12,
+        "supply": 1
+      },
+      "approval_cases": 24,
+      "cache_cases": 8,
+      "adversarial_cases": 16
+    }
+  },
+  "limitations": [
+    "offline demo uses deterministic router fallback and synthetic market data",
+    "approval is issued by the local single-user demo control plane",
+    "no trading, service changes, notifications, shell, SQL, or user code are executed"
+  ]
+}
