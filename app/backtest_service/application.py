@@ -7,7 +7,11 @@ import json
 from datetime import UTC, datetime
 from time import perf_counter
 
-from app.contracts import BacktestExecuteRequest, BacktestExecuteResponse
+from app.contracts import (
+    BacktestDataVersionRequest,
+    BacktestExecuteRequest,
+    BacktestExecuteResponse,
+)
 from app.domain.backtest import run_sma_crossover
 from app.domain.market_data import MarketDataRepository, profile_bars
 
@@ -46,6 +50,9 @@ class BacktestApplication:
 
     def __init__(self, repository: MarketDataRepository):
         self.repository = repository
+
+    def data_version(self, request: BacktestDataVersionRequest) -> str:
+        return self.repository.data_version(request.strategy)
 
     def execute(self, request: BacktestExecuteRequest) -> BacktestExecuteResponse:
         started = perf_counter()

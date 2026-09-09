@@ -8,10 +8,16 @@ import json
 from pathlib import Path
 from typing import Any
 
+from app.agent_service.api import app as agent_app
 from app.backtest_service.api import app as backtest_app
 from app.contracts import (
+    AgentExecuteRequest,
+    AgentExecuteResponse,
+    AgentResultArtifact,
     AgentRunRequestedCommand,
     AgentRunResultEvent,
+    BacktestDataVersionRequest,
+    BacktestDataVersionResponse,
     BacktestExecuteRequest,
     BacktestExecuteResponse,
     BacktestRunRequestedCommand,
@@ -27,6 +33,11 @@ CONTRACT_MODELS = {
         MessageMetadata,
         ProblemDetails,
         ServiceHealth,
+        AgentExecuteRequest,
+        AgentExecuteResponse,
+        AgentResultArtifact,
+        BacktestDataVersionRequest,
+        BacktestDataVersionResponse,
         BacktestExecuteRequest,
         BacktestExecuteResponse,
         AgentRunRequestedCommand,
@@ -121,6 +132,7 @@ def export_contracts(output_root: Path) -> dict[str, str]:
     for name, model in CONTRACT_MODELS.items():
         _write_json(schema_root / f"{name}.schema.json", model.model_json_schema())
     _write_json(output_root / "backtest-service.openapi.json", backtest_app.openapi())
+    _write_json(output_root / "agent-service.openapi.json", agent_app.openapi())
     _write_json(output_root / "asyncapi.v1.json", _asyncapi_document())
 
     files = sorted(path for path in output_root.rglob("*.json") if path.name != "manifest.json")

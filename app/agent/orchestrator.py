@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import hmac
+import json
 from collections.abc import Awaitable, Callable
 from contextlib import nullcontext
 from datetime import UTC, datetime
@@ -38,8 +40,14 @@ from app.approval import (
     ApprovalStateError,
     ApprovalTokenError,
 )
-from app.domain.backtest import BacktestResult, run_sma_crossover
-from app.domain.market_data import Bar, MarketDataRepository, profile_bars
+from app.backtest_service.port import (
+    BacktestCallContext,
+    BacktestExecution,
+    BacktestExecutionPort,
+    LocalBacktestExecutor,
+)
+from app.domain.backtest import BacktestResult
+from app.domain.market_data import MarketDataRepository, profile_bars
 from app.mcp_client import MCPClientManager
 from app.memory import ArtifactCache, CacheLookup, TaskFingerprint, build_task_fingerprint
 from app.models import (
@@ -84,6 +92,21 @@ def _backtest_summary(result: BacktestResult, profile: DataProfile) -> str:
     )
 
 
+def _bounded_backtest_spec(spec: StrategySpec) -> StrategySpec:
+    """Fill omitted dates before crossing the Backtest Service trust boundary."""
+    if spec.start_date is not None and spec.end_date is not None:
+        return spec
+    if spec.start_date is not None:
+        return spec.model_copy(update={"end_date": spec.start_date.replace(month=12, day=31)})
+    if spec.end_date is not None:
+        return spec.model_copy(update={"start_date": spec.end_date.replace(month=1, day=1)})
+    end_date = datetime(2025, 12, 31, tzinfo=UTC).date()
+    start_year = 2021 if spec.timeframe == "1h" else 2018
+    return spec.model_copy(
+        update={"start_date": end_date.replace(year=start_year), "end_date": end_date}
+    )
+
+
 class AurumAgent:
     def __init__(
         self,
@@ -100,6 +123,7 @@ class AurumAgent:
         research_cache_ttl_seconds: int = 900,
         telemetry: Telemetry | None = None,
         mcp_clients: MCPClientManager | None = None,
+        backtest_executor: BacktestExecutionPort | None = None,
     ):
         self.interpreter = interpreter
         self.market_repository = market_repository
@@ -114,11 +138,15 @@ class AurumAgent:
         self.research_cache_ttl_seconds = research_cache_ttl_seconds
         self.telemetry = telemetry
         self.mcp_clients = mcp_clients
+        self.backtest_executor = backtest_executor or LocalBacktestExecutor(market_repository)
         self.tools = ToolRegistry()
         read_low = ToolMetadata(effect="read", risk="low")
-        self.tools.register("inspect_market_data", self._inspect_market_data, read_low)
-        self.tools.register("validate_strategy_spec", self._validate_strategy_spec, read_low)
-        self.tools.register("run_backtest", self._run_backtest, read_low)
+        self.tools.register(
+            "resolve_backtest_data_version",
+            self._resolve_backtest_data_version,
+            read_low,
+        )
+        self.tools.register("execute_backtest", self._execute_backtest, read_low)
         self.tools.register("summarize_result", self._summarize_result, read_low)
         self.tools.register("query_market_data", self._query_market_data, read_low)
         self.tools.register("summarize_market_query", self._summarize_market_query, read_low)
@@ -142,28 +170,35 @@ class AurumAgent:
         self.tools.register("summarize_incident_review", self._summarize_incident_review, read_low)
         self.tools.register("compose_general_response", self._compose_general_response, read_low)
 
-    async def _inspect_market_data(self, spec: StrategySpec) -> dict[str, Any]:
-        bars = self.market_repository.load(spec)
-        profile = profile_bars(self.market_repository, spec, bars)
-        return {"bars": bars, "profile": profile}
-
-    async def _validate_strategy_spec(
+    async def _resolve_backtest_data_version(
         self,
         spec: StrategySpec,
-        bars: list[Bar],
-        profile: DataProfile,
-    ) -> list[str]:
-        if profile.duplicate_timestamps or profile.non_positive_prices:
-            raise ValueError("行情数据未通过硬性质量检查")
-        if len(bars) < spec.slow_window + 5:
-            raise ValueError("行情数据不足以完成指标预热")
-        return [
-            "信号在当前 K 线收盘后确认，统一在下一根 K 线开盘成交，避免同 K 线未来函数。",
-            *profile.warnings,
-        ]
+        run_id: str,
+        call_context: BacktestCallContext | None = None,
+    ) -> str:
+        material = json.dumps(spec.model_dump(mode="json"), sort_keys=True).encode()
+        context = call_context or BacktestCallContext.for_agent_run(
+            run_id=run_id, idempotency_key=f"preflight-{hashlib.sha256(material).hexdigest()}"
+        )
+        return await self.backtest_executor.data_version(spec, context)
 
-    async def _run_backtest(self, spec: StrategySpec, bars: list[Bar]) -> BacktestResult:
-        return run_sma_crossover(spec, bars)
+    async def _execute_backtest(
+        self,
+        spec: StrategySpec,
+        run_id: str,
+        task_fingerprint: str,
+        expected_data_version: str,
+        call_context: BacktestCallContext | None = None,
+    ) -> BacktestExecution:
+        context = call_context or BacktestCallContext.for_agent_run(
+            run_id=run_id,
+            idempotency_key=task_fingerprint,
+        )
+        return await self.backtest_executor.execute(
+            spec,
+            context,
+            expected_data_version=expected_data_version,
+        )
 
     async def _summarize_result(self, result: BacktestResult, profile: DataProfile) -> str:
         return _backtest_summary(result, profile)
@@ -624,6 +659,7 @@ class AurumAgent:
         gateway: ToolGateway,
         cache_policy: Literal["use", "refresh", "bypass"],
         session: AgentExecutionSession | None = None,
+        backtest_call_context: BacktestCallContext | None = None,
     ) -> dict[str, Any]:
         interpretation = await self._timed_event(
             events,
@@ -633,55 +669,54 @@ class AurumAgent:
             lambda: self.interpreter.interpret(question),
             session=session,
         )
+        bounded_spec = _bounded_backtest_spec(interpretation.spec)
+        if bounded_spec != interpretation.spec:
+            interpretation = interpretation.__class__(
+                spec=bounded_spec,
+                interpreter=interpretation.interpreter,
+                warnings=[
+                    *interpretation.warnings,
+                    "未给出完整日期范围，已在跨服务边界补入有界默认日期。",
+                ],
+            )
+        run_id = gateway.run_id or "standalone-run"
+        data_version = await self._timed_event(
+            events,
+            runtime,
+            "resolve_backtest_data_version",
+            "已通过受治理 Tool 锁定回测数据版本",
+            lambda: gateway.call(
+                "resolve_backtest_data_version",
+                spec=bounded_spec,
+                run_id=run_id,
+                call_context=backtest_call_context,
+            ),
+            tool_name="resolve_backtest_data_version",
+            session=session,
+        )
         task = build_task_fingerprint(
             "backtest_strategy",
-            interpretation.spec,
-            self.market_repository.data_version(interpretation.spec),
+            bounded_spec,
+            data_version,
         )
         lookup = self._lookup_cache(events, runtime, task, cache_policy, session)
         if lookup.info.status == "exact_hit" and lookup.source is not None:
             return self._cached_payload(lookup.source, lookup.info)
-        inspected = await self._timed_event(
+        execution: BacktestExecution = await self._timed_event(
             events,
             runtime,
-            "inspect_market_data",
-            "已通过受治理 Tool 读取并检查行情数据",
+            "execute_backtest",
+            "独立确定性 Backtest Engine 执行完成",
             lambda: gateway.call(
-                "inspect_market_data",
-                memory_key=f"{task.fingerprint}:inspect_market_data",
-                spec=interpretation.spec,
+                "execute_backtest",
+                memory_key=f"{task.fingerprint}:execute_backtest",
+                spec=bounded_spec,
+                run_id=run_id,
+                task_fingerprint=task.fingerprint,
+                expected_data_version=data_version,
+                call_context=backtest_call_context,
             ),
-            tool_name="inspect_market_data",
-            session=session,
-        )
-        bars: list[Bar] = inspected["bars"]
-        profile: DataProfile = inspected["profile"]
-        validation_warnings = await self._timed_event(
-            events,
-            runtime,
-            "validate_strategy_spec",
-            "已验证参数边界、数据充分性和下一根 K 线成交约束",
-            lambda: gateway.call(
-                "validate_strategy_spec",
-                spec=interpretation.spec,
-                bars=bars,
-                profile=profile,
-            ),
-            tool_name="validate_strategy_spec",
-            session=session,
-        )
-        result: BacktestResult = await self._timed_event(
-            events,
-            runtime,
-            "run_backtest",
-            "确定性回测工具执行完成",
-            lambda: gateway.call(
-                "run_backtest",
-                memory_key=f"{task.fingerprint}:run_backtest",
-                spec=interpretation.spec,
-                bars=bars,
-            ),
-            tool_name="run_backtest",
+            tool_name="execute_backtest",
             session=session,
         )
         summary = await self._timed_event(
@@ -689,19 +724,23 @@ class AurumAgent:
             runtime,
             "summarize_result",
             "已根据结构化实验产物生成反馈",
-            lambda: gateway.call("summarize_result", result=result, profile=profile),
+            lambda: gateway.call(
+                "summarize_result",
+                result=execution.result,
+                profile=execution.profile,
+            ),
             tool_name="summarize_result",
             session=session,
         )
         return {
             "interpreter": interpretation.interpreter,
-            "strategy": interpretation.spec,
-            "data_profile": profile,
-            "metrics": result.metrics,
-            "trades": result.trades,
-            "equity_curve": result.equity_curve,
+            "strategy": bounded_spec,
+            "data_profile": execution.profile,
+            "metrics": execution.result.metrics,
+            "trades": execution.result.trades,
+            "equity_curve": execution.result.equity_curve,
             "summary": summary,
-            "warnings": [*interpretation.warnings, *validation_warnings],
+            "warnings": [*interpretation.warnings, *execution.warnings],
             "cache_status": lookup.info.status,
             "cache": lookup.info,
             "_cache_task": task,
@@ -961,8 +1000,13 @@ class AurumAgent:
         question: str,
         *,
         cache_policy: Literal["use", "refresh", "bypass"] = "use",
+        backtest_call_context: BacktestCallContext | None = None,
     ) -> RunResponse:
-        return await self._observed_execute(question, cache_policy=cache_policy)
+        return await self._observed_execute(
+            question,
+            cache_policy=cache_policy,
+            backtest_call_context=backtest_call_context,
+        )
 
     async def run_checkpointed(
         self,
@@ -975,6 +1019,7 @@ class AurumAgent:
         stage_timeout_seconds: float,
         checkpoint: AgentCheckpoint | None = None,
         trusted_consumed_approval: ApprovalRequest | None = None,
+        backtest_call_context: BacktestCallContext | None = None,
     ) -> RunResponse:
         """Execute for a Worker, persisting after every completed Plan step."""
         return await self._observed_execute(
@@ -986,6 +1031,7 @@ class AurumAgent:
             cancel_probe=cancel_probe,
             stage_timeout_seconds=stage_timeout_seconds,
             trusted_consumed_approval=trusted_consumed_approval,
+            backtest_call_context=backtest_call_context,
         )
 
     async def resume(self, run_id: str, approval_token: str) -> RunResponse:
@@ -1128,6 +1174,7 @@ class AurumAgent:
         cancel_probe: CancelProbe | None = None,
         stage_timeout_seconds: float = 30.0,
         trusted_consumed_approval: ApprovalRequest | None = None,
+        backtest_call_context: BacktestCallContext | None = None,
     ) -> RunResponse:
         stored_question = redact_sensitive_text(question)
         if checkpoint is not None:
@@ -1387,9 +1434,20 @@ class AurumAgent:
                 "incident_review": self._run_incident_review_workflow,
                 "other": self._run_general_workflow,
             }
-            payload = await workflows[route.intent](
-                question, events, runtime, gateway, cache_policy, session
-            )
+            if route.intent == "backtest_strategy":
+                payload = await self._run_backtest_workflow(
+                    question,
+                    events,
+                    runtime,
+                    gateway,
+                    cache_policy,
+                    session,
+                    backtest_call_context,
+                )
+            else:
+                payload = await workflows[route.intent](
+                    question, events, runtime, gateway, cache_policy, session
+                )
             cache_task = payload.pop("_cache_task", None)
             cache_ttl = payload.pop("_cache_ttl", None)
             cache_status = payload.get("cache_status", "bypass")

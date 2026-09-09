@@ -8,7 +8,7 @@ def test_contract_export_is_deterministic_and_hash_pinned(tmp_path):
     first = export_contracts(tmp_path)
     second = export_contracts(tmp_path)
     assert first == second
-    assert len(first) == len(CONTRACT_MODELS) + 2
+    assert len(first) == len(CONTRACT_MODELS) + 3
 
     manifest = json.loads((tmp_path / "manifest.json").read_text())
     assert manifest["contract_version"] == "1.0.0"
@@ -24,6 +24,7 @@ def test_exported_contracts_are_strict_and_have_fixed_channels(tmp_path):
     )
     asyncapi = json.loads((tmp_path / "asyncapi.v1.json").read_text())
     openapi = json.loads((tmp_path / "backtest-service.openapi.json").read_text())
+    agent_openapi = json.loads((tmp_path / "agent-service.openapi.json").read_text())
 
     assert request_schema["additionalProperties"] is False
     assert request_schema["properties"]["schema_version"]["const"] == "backtest-request-v1"
@@ -35,5 +36,6 @@ def test_exported_contracts_are_strict_and_have_fixed_channels(tmp_path):
         "goldanalyze.backtest.events.v1",
     }
     assert "/internal/v1/backtests/execute" in openapi["paths"]
+    assert "/internal/v1/agent-runs/execute" in agent_openapi["paths"]
     security_header = openapi["components"]["schemas"]
     assert "BacktestExecuteRequest" in security_header

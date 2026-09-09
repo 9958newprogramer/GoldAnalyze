@@ -41,7 +41,7 @@ async def test_agent_completes_minimum_closed_loop(tmp_path):
     )
 
     assert response.status == "completed"
-    assert response.skill == "backtest-strategy@0.2.0"
+    assert response.skill == "backtest-strategy@1.0.0"
     assert response.strategy is not None
     assert response.metrics is not None
     assert response.data_profile is not None
@@ -50,17 +50,16 @@ async def test_agent_completes_minimum_closed_loop(tmp_path):
     assert response.route.intent == "backtest_strategy"
     assert response.plan is not None
     assert response.plan.validated is True
-    assert response.plan.planned_tool_calls == 4
+    assert response.plan.planned_tool_calls == 3
     assert response.plan.completed_steps == [step.step_id for step in response.plan.steps]
     assert [event.stage for event in response.events] == [
         "route_intent",
         "select_skill",
         "build_plan",
         "interpret_strategy",
+        "resolve_backtest_data_version",
         "cache_lookup",
-        "inspect_market_data",
-        "validate_strategy_spec",
-        "run_backtest",
+        "execute_backtest",
         "summarize_result",
     ]
     assert response.cache_status == "miss"
@@ -185,15 +184,19 @@ async def test_equivalent_strategy_phrasing_reuses_persisted_artifact(tmp_path):
     assert reused.execution_mode == "cache"
     assert reused.cache is not None
     assert reused.cache.source_run_id == source.run_id
-    assert reused.cache.saved_tool_calls == 4
+    assert reused.cache.saved_tool_calls == 2
     assert reused.metrics == source.metrics
-    assert reused.tool_audit == []
+    assert [
+        item["tool"] for item in reused.tool_audit if item["phase"] == "execution"
+    ] == ["resolve_backtest_data_version"]
     assert reused.plan is not None
-    assert reused.plan.completed_steps == ["interpret_strategy", "cache_lookup"]
+    assert reused.plan.completed_steps == [
+        "interpret_strategy",
+        "resolve_backtest_data_version",
+        "cache_lookup",
+    ]
     assert reused.plan.skipped_steps == [
-        "inspect_market_data",
-        "validate_strategy_spec",
-        "run_backtest",
+        "execute_backtest",
         "summarize_result",
     ]
     assert [event.stage for event in reused.events] == [
@@ -201,6 +204,7 @@ async def test_equivalent_strategy_phrasing_reuses_persisted_artifact(tmp_path):
         "select_skill",
         "build_plan",
         "interpret_strategy",
+        "resolve_backtest_data_version",
         "cache_lookup",
     ]
 
@@ -217,7 +221,7 @@ async def test_similar_but_different_strategy_is_candidate_and_reexecutes(tmp_pa
     assert candidate.cache.source_run_id == source.run_id
     assert candidate.cache.similarity_score is not None
     assert candidate.cache.similarity_score >= 0.82
-    assert len([item for item in candidate.tool_audit if item["phase"] == "execution"]) == 4
+    assert len([item for item in candidate.tool_audit if item["phase"] == "execution"]) == 3
     assert candidate.strategy != source.strategy
 
 

@@ -12,6 +12,8 @@ The financial calculation is a deterministic tool; the Skill demonstrates Agent 
 - Signals observed on one bar execute at the next bar open.
 - Never generate or execute arbitrary Python, SQL, or shell commands.
 - Use only the tools allowlisted in `skill.json`.
+- Resolve and pin the market-data version before any cache lookup or calculation.
+- The governed Backtest Engine adapter may be local or internal HTTP, but must return the same schema.
 - Stop safely when data validation fails or the tool budget is exhausted.
 - Every numerical conclusion must come from the structured backtest result.
 - Reuse an Artifact only when the normalized StrategySpec and market data version both match.

@@ -56,6 +56,7 @@ async def lifespan(_: FastAPI):
         yield
     finally:
         await services.mcp_clients.stop()
+        await services.backtest_executor.close()
         await services.job_broker.close()
         services.telemetry.shutdown()
 

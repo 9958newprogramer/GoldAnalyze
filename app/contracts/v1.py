@@ -13,12 +13,20 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
 from app.models import (
+    AgentEvent,
+    ApprovalRequest,
     BacktestMetrics,
     CacheInfo,
     DataProfile,
     EquityPoint,
     ExecutionPlan,
+    ExternalResearchResult,
+    ExternalResearchSpec,
+    IncidentReviewResult,
+    IncidentSpec,
     IntentDecision,
+    MarketQueryResult,
+    MarketQuerySpec,
     RunResponse,
     StrategySpec,
     Trade,
@@ -114,6 +122,25 @@ class BacktestExecuteRequest(StrictContract):
         return self
 
 
+class BacktestDataVersionRequest(StrictContract):
+    """Small preflight request used to build a cache-safe task fingerprint."""
+
+    schema_version: Literal["backtest-data-version-request-v1"] = "backtest-data-version-request-v1"
+    request_id: OpaqueId
+    job_id: OpaqueId
+    run_id: OpaqueId
+    strategy: StrategySpec
+
+
+class BacktestDataVersionResponse(StrictContract):
+    schema_version: Literal["backtest-data-version-result-v1"] = "backtest-data-version-result-v1"
+    request_id: OpaqueId
+    job_id: OpaqueId
+    run_id: OpaqueId
+    engine_version: Literal["sma-crossover-v1"] = "sma-crossover-v1"
+    data_version: str = Field(min_length=3, max_length=128)
+
+
 class BacktestExecuteResponse(StrictContract):
     schema_version: Literal["backtest-result-v1"] = "backtest-result-v1"
     request_id: OpaqueId
@@ -151,6 +178,35 @@ class ServiceHealth(StrictContract):
     status: Literal["ok", "degraded"]
     version: str = Field(min_length=1, max_length=32)
     dependencies: dict[str, Literal["ok", "degraded", "unavailable"]] = Field(default_factory=dict)
+
+
+class AgentExecuteRequest(StrictContract):
+    """Synchronous internal request from Java to the Python Agent Service."""
+
+    schema_version: Literal["agent-execute-request-v1"] = "agent-execute-request-v1"
+    request_id: OpaqueId
+    job_id: OpaqueId
+    run_id: OpaqueId
+    idempotency_key: IdempotencyKey
+    question: str = Field(min_length=4, max_length=1_000)
+    cache_policy: Literal["use", "refresh", "bypass"] = "use"
+    requested_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    deadline_at: datetime | None = None
+
+    @model_validator(mode="after")
+    def require_bounded_deadline(self) -> AgentExecuteRequest:
+        if self.requested_at.tzinfo is None:
+            raise ValueError("requested_at must include a timezone")
+        if self.requested_at > datetime.now(UTC) + timedelta(minutes=1):
+            raise ValueError("requested_at cannot be in the future")
+        if self.deadline_at is not None:
+            if self.deadline_at.tzinfo is None:
+                raise ValueError("deadline_at must include a timezone")
+            if self.deadline_at <= self.requested_at:
+                raise ValueError("deadline_at must be later than requested_at")
+            if self.deadline_at - self.requested_at > timedelta(minutes=5):
+                raise ValueError("deadline_at cannot exceed the five-minute execution budget")
+        return self
 
 
 class AgentRunRequestedCommand(StrictContract):
@@ -192,8 +248,22 @@ class AgentResultArtifact(StrictContract):
     route: IntentDecision | None = None
     plan: ExecutionPlan | None = None
     cache: CacheInfo | None = None
+    strategy: StrategySpec | None = None
+    market_query: MarketQuerySpec | None = None
+    market_result: MarketQueryResult | None = None
+    research_spec: ExternalResearchSpec | None = None
+    research_result: ExternalResearchResult | None = None
+    incident_spec: IncidentSpec | None = None
+    incident_result: IncidentReviewResult | None = None
+    data_profile: DataProfile | None = None
+    metrics: BacktestMetrics | None = None
+    trades: list[Trade] = Field(default_factory=list, max_length=10_000)
+    equity_curve: list[EquityPoint] = Field(default_factory=list, max_length=321)
     summary: str = Field(max_length=4_000)
     warnings: list[str] = Field(default_factory=list, max_length=32)
+    events: list[AgentEvent] = Field(default_factory=list, max_length=64)
+    tool_audit: list[dict[str, object]] = Field(default_factory=list, max_length=128)
+    approval: ApprovalRequest | None = None
 
     @classmethod
     def from_run(cls, run: RunResponse) -> AgentResultArtifact:
@@ -204,9 +274,34 @@ class AgentResultArtifact(StrictContract):
             route=run.route,
             plan=run.plan,
             cache=run.cache,
+            strategy=run.strategy,
+            market_query=run.market_query,
+            market_result=run.market_result,
+            research_spec=run.research_spec,
+            research_result=run.research_result,
+            incident_spec=run.incident_spec,
+            incident_result=run.incident_result,
+            data_profile=run.data_profile,
+            metrics=run.metrics,
+            trades=run.trades,
+            equity_curve=run.equity_curve,
             summary=run.summary,
             warnings=run.warnings,
+            events=run.events,
+            tool_audit=run.tool_audit,
+            approval=run.approval,
         )
+
+
+class AgentExecuteResponse(StrictContract):
+    schema_version: Literal["agent-execute-result-v1"] = "agent-execute-result-v1"
+    request_id: OpaqueId
+    job_id: OpaqueId
+    run_id: OpaqueId
+    execution_id: OpaqueId
+    artifact: AgentResultArtifact
+    result_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    duration_ms: float = Field(ge=0)
 
 
 class AgentRunResultEvent(StrictContract):

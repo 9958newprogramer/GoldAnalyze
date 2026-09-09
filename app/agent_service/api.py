@@ -1,38 +1,37 @@
-"""Internal FastAPI adapter for the deterministic Backtest Engine service."""
+"""Internal FastAPI boundary for Java control-plane to Agent execution."""
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
+import json
 import secrets
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from time import perf_counter
 from typing import Annotated
 
 import uvicorn
 from fastapi import Depends, FastAPI, Header, Request, Response
-from fastapi.concurrency import run_in_threadpool
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from opentelemetry.trace import SpanKind
 
 from app import __version__
-from app.backtest_service.application import (
-    BacktestApplication,
-    BacktestApplicationError,
-    DataVersionConflict,
-    ExecutionDeadlineExceeded,
-    WorkloadLimitExceeded,
-)
+from app.backtest_service.port import BacktestCallContext, BacktestServiceError
+from app.bootstrap import Services, build_services
 from app.config import Settings, settings
 from app.contracts import (
-    BacktestDataVersionRequest,
-    BacktestDataVersionResponse,
-    BacktestExecuteRequest,
-    BacktestExecuteResponse,
+    AgentExecuteRequest,
+    AgentExecuteResponse,
+    AgentResultArtifact,
     ProblemDetails,
     ServiceHealth,
 )
-from app.domain.market_data import MarketDataRepository, build_market_repository
-from app.observability import Telemetry
+
+
+class ControlPlaneAuthenticationError(Exception):
+    """Authentication failure without reflecting credential details."""
 
 
 def _problem(
@@ -42,7 +41,7 @@ def _problem(
     code: str,
     title: str,
     detail: str,
-    telemetry: Telemetry,
+    services: Services,
     retryable: bool = False,
 ) -> JSONResponse:
     body = ProblemDetails(
@@ -51,7 +50,7 @@ def _problem(
         code=code,
         detail=detail,
         request_id=request_id,
-        trace_id=telemetry.current_trace_id(),
+        trace_id=services.telemetry.current_trace_id(),
         retryable=retryable,
     )
     return JSONResponse(
@@ -61,54 +60,61 @@ def _problem(
     )
 
 
+def _artifact_digest(artifact: AgentResultArtifact) -> str:
+    encoded = json.dumps(
+        artifact.model_dump(mode="json"),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def create_app(
     app_settings: Settings = settings,
     *,
-    repository: MarketDataRepository | None = None,
-    telemetry: Telemetry | None = None,
+    services: Services | None = None,
 ) -> FastAPI:
     if app_settings.internal_service_token and len(app_settings.internal_service_token) < 32:
         raise ValueError("INTERNAL_SERVICE_TOKEN must contain at least 32 characters")
-    if not app_settings.internal_service_token and app_settings.backtest_service_host not in {
+    if not app_settings.internal_service_token and app_settings.agent_service_host not in {
         "127.0.0.1",
         "::1",
         "localhost",
     }:
         raise ValueError("INTERNAL_SERVICE_TOKEN is required when binding beyond loopback")
 
-    runtime_telemetry = telemetry or Telemetry(
-        service_name="goldanalyze-backtest-service",
-        service_version=__version__,
-        exporter=app_settings.otel_exporter,
-        otlp_endpoint=app_settings.otel_otlp_endpoint,
-        sample_ratio=app_settings.otel_sample_ratio,
-        memory_max_spans=app_settings.otel_memory_max_spans,
-        metric_export_interval_seconds=app_settings.otel_metric_export_interval_seconds,
-    )
-    application = BacktestApplication(repository or build_market_repository(app_settings))
+    runtime = services or build_services(app_settings)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
+        await runtime.mcp_clients.start()
+        runtime.mcp_clients.register_tools(runtime.agent.tools)
         try:
             yield
         finally:
-            runtime_telemetry.shutdown()
+            await runtime.mcp_clients.stop()
+            await runtime.backtest_executor.close()
+            await runtime.job_broker.close()
+            runtime.telemetry.shutdown()
 
     service = FastAPI(
-        title="GoldAnalyze Backtest Engine",
+        title="GoldAnalyze Agent Service",
         version=__version__,
-        description="Internal deterministic compute service; Java owns control-plane state.",
+        description=(
+            "Internal Agent execution service. The Java control plane owns users, jobs, "
+            "idempotency records, approvals, and durable business state."
+        ),
         lifespan=lifespan,
     )
-    service.state.application = application
-    service.state.telemetry = runtime_telemetry
+    service.state.services = runtime
 
     @service.middleware("http")
     async def security_and_observability(request: Request, call_next):
-        parent = runtime_telemetry.extract(request.headers)
+        parent = runtime.telemetry.extract(request.headers)
         started = perf_counter()
         response: Response | None = None
-        with runtime_telemetry.span(
+        with runtime.telemetry.span(
             f"{request.method.upper()} request",
             attributes={"http.request.method": request.method.upper()},
             kind=SpanKind.SERVER,
@@ -117,7 +123,7 @@ def create_app(
             try:
                 response = await call_next(request)
             except Exception as exc:
-                runtime_telemetry.mark_error(span, type(exc).__name__)
+                runtime.telemetry.mark_error(span, type(exc).__name__)
                 raise
             finally:
                 status_code = response.status_code if response is not None else 500
@@ -133,14 +139,14 @@ def create_app(
                     "route": route,
                     "status_class": f"{status_code // 100}xx",
                 }
-                runtime_telemetry.count("goldanalyze.backtest.http.requests", attributes=attributes)
-                runtime_telemetry.record(
-                    "goldanalyze.backtest.http.duration",
+                runtime.telemetry.count("goldanalyze.agent.http.requests", attributes=attributes)
+                runtime.telemetry.record(
+                    "goldanalyze.agent.http.duration",
                     round((perf_counter() - started) * 1_000, 2),
                     attributes=attributes,
                 )
             if response is not None:
-                trace_id = runtime_telemetry.current_trace_id()
+                trace_id = runtime.telemetry.current_trace_id()
                 if trace_id is not None:
                     response.headers["X-Trace-Id"] = trace_id
                 response.headers["X-Content-Type-Options"] = "nosniff"
@@ -172,7 +178,7 @@ def create_app(
             code="CONTROL_PLANE_UNAUTHORIZED",
             title="Unauthorized",
             detail="Valid control-plane service credentials are required.",
-            telemetry=runtime_telemetry,
+            services=runtime,
         )
 
     @service.exception_handler(RequestValidationError)
@@ -183,13 +189,13 @@ def create_app(
             code="CONTRACT_VALIDATION_FAILED",
             title="Contract validation failed",
             detail="The request does not conform to the versioned service contract.",
-            telemetry=runtime_telemetry,
+            services=runtime,
         )
 
     @service.get("/health/live", response_model=ServiceHealth)
     async def liveness() -> ServiceHealth:
         return ServiceHealth(
-            service="backtest-service",
+            service="agent-service",
             status="ok",
             version=__version__,
             dependencies={},
@@ -197,97 +203,91 @@ def create_app(
 
     @service.get("/health/ready", response_model=ServiceHealth)
     async def readiness() -> ServiceHealth:
+        backtest_ready = await runtime.backtest_executor.ready()
         return ServiceHealth(
-            service="backtest-service",
-            status="ok",
+            service="agent-service",
+            status="ok" if backtest_ready else "degraded",
             version=__version__,
-            dependencies={"market-data": "ok"},
+            dependencies={"backtest-service": "ok" if backtest_ready else "unavailable"},
         )
 
     @service.post(
-        "/internal/v1/backtests/data-version",
-        response_model=BacktestDataVersionResponse,
-        responses={401: {"model": ProblemDetails}, 422: {"model": ProblemDetails}},
-        dependencies=[Depends(require_control_plane)],
-    )
-    async def inspect_data_version(
-        payload: BacktestDataVersionRequest,
-    ) -> BacktestDataVersionResponse:
-        data_version = await run_in_threadpool(application.data_version, payload)
-        return BacktestDataVersionResponse(
-            request_id=payload.request_id,
-            job_id=payload.job_id,
-            run_id=payload.run_id,
-            data_version=data_version,
-        )
-
-    @service.post(
-        "/internal/v1/backtests/execute",
-        response_model=BacktestExecuteResponse,
+        "/internal/v1/agent-runs/execute",
+        response_model=AgentExecuteResponse,
         responses={
             401: {"model": ProblemDetails},
-            408: {"model": ProblemDetails},
-            409: {"model": ProblemDetails},
             422: {"model": ProblemDetails},
+            503: {"model": ProblemDetails},
+            504: {"model": ProblemDetails},
         },
         dependencies=[Depends(require_control_plane)],
     )
-    async def execute_backtest(payload: BacktestExecuteRequest):
-        try:
-            return await run_in_threadpool(application.execute, payload)
-        except DataVersionConflict:
+    async def execute_agent(payload: AgentExecuteRequest):
+        if payload.deadline_at is not None and datetime.now(UTC) >= payload.deadline_at:
             return _problem(
                 request_id=payload.request_id,
-                status_code=409,
-                code="DATA_VERSION_CONFLICT",
-                title="Market data version conflict",
-                detail="Configured market data does not match the requested immutable version.",
-                telemetry=runtime_telemetry,
-            )
-        except ExecutionDeadlineExceeded:
-            return _problem(
-                request_id=payload.request_id,
-                status_code=408,
-                code="EXECUTION_DEADLINE_EXCEEDED",
-                title="Execution deadline exceeded",
-                detail="The execution deadline elapsed before the calculation started.",
-                telemetry=runtime_telemetry,
+                status_code=504,
+                code="AGENT_DEADLINE_EXCEEDED",
+                title="Agent deadline exceeded",
+                detail="The execution deadline elapsed before Agent execution started.",
+                services=runtime,
                 retryable=True,
             )
-        except WorkloadLimitExceeded:
+        context = BacktestCallContext(
+            request_id=payload.request_id,
+            job_id=payload.job_id,
+            run_id=payload.run_id,
+            idempotency_key=payload.idempotency_key,
+            deadline_at=payload.deadline_at,
+        )
+        started = perf_counter()
+        try:
+            if payload.deadline_at is None:
+                result = await runtime.agent.run(
+                    payload.question,
+                    cache_policy=payload.cache_policy,
+                    backtest_call_context=context,
+                )
+            else:
+                timeout = max((payload.deadline_at - datetime.now(UTC)).total_seconds(), 0.001)
+                async with asyncio.timeout(timeout):
+                    result = await runtime.agent.run(
+                        payload.question,
+                        cache_policy=payload.cache_policy,
+                        backtest_call_context=context,
+                    )
+        except TimeoutError:
             return _problem(
                 request_id=payload.request_id,
-                status_code=422,
-                code="WORKLOAD_LIMIT_EXCEEDED",
-                title="Backtest workload rejected",
-                detail="The requested dataset or result exceeds the bounded workload limits.",
-                telemetry=runtime_telemetry,
+                status_code=504,
+                code="AGENT_DEADLINE_EXCEEDED",
+                title="Agent deadline exceeded",
+                detail="Agent execution did not finish before the supplied deadline.",
+                services=runtime,
+                retryable=True,
             )
-        except (ValueError, ArithmeticError):
+        except BacktestServiceError as exc:
             return _problem(
                 request_id=payload.request_id,
-                status_code=422,
-                code="BACKTEST_INPUT_INVALID",
-                title="Backtest input rejected",
-                detail="The supplied strategy cannot be evaluated against the selected dataset.",
-                telemetry=runtime_telemetry,
-            )
-        except BacktestApplicationError as exc:
-            return _problem(
-                request_id=payload.request_id,
-                status_code=500,
+                status_code=503 if exc.retryable else 422,
                 code=exc.code,
-                title="Backtest execution failed",
-                detail="The calculation could not be completed.",
-                telemetry=runtime_telemetry,
+                title="Backtest dependency failed",
+                detail="The Agent could not complete its bounded Backtest Service call.",
+                services=runtime,
                 retryable=exc.retryable,
             )
+        artifact = AgentResultArtifact.from_run(result)
+        return AgentExecuteResponse(
+            request_id=payload.request_id,
+            job_id=payload.job_id,
+            run_id=payload.run_id,
+            execution_id=result.run_id,
+            artifact=artifact,
+            result_digest=_artifact_digest(artifact),
+            duration_ms=round((perf_counter() - started) * 1_000, 2),
+        )
 
     return service
-
-
-class ControlPlaneAuthenticationError(Exception):
-    """Authentication failure without reflecting credential details."""
 
 
 app = create_app()
@@ -295,9 +295,9 @@ app = create_app()
 
 def run() -> None:
     uvicorn.run(
-        "app.backtest_service.api:app",
-        host=settings.backtest_service_host,
-        port=settings.backtest_service_port,
+        "app.agent_service.api:app",
+        host=settings.agent_service_host,
+        port=settings.agent_service_port,
         reload=False,
     )
 

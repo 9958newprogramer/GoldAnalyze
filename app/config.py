@@ -53,8 +53,20 @@ class Settings:
     app_name: str = "AurumLab"
     app_host: str = os.getenv("APP_HOST", "127.0.0.1")
     app_port: int = _port_from_env("APP_PORT", 8010)
+    agent_service_host: str = os.getenv("AGENT_SERVICE_HOST", "127.0.0.1")
+    agent_service_port: int = _port_from_env("AGENT_SERVICE_PORT", 8011)
     backtest_service_host: str = os.getenv("BACKTEST_SERVICE_HOST", "127.0.0.1")
     backtest_service_port: int = _port_from_env("BACKTEST_SERVICE_PORT", 8020)
+    backtest_service_url: str = os.getenv(
+        "BACKTEST_SERVICE_URL", "http://127.0.0.1:8020"
+    )
+    backtest_service_timeout_seconds: float = _bounded_float_from_env(
+        "BACKTEST_SERVICE_TIMEOUT_SECONDS", 30.0, 0.1, 300.0
+    )
+    backtest_allow_insecure_http: bool = _bool_from_env("BACKTEST_ALLOW_INSECURE_HTTP")
+    agent_backtest_adapter: str = _choice_from_env(
+        "AGENT_BACKTEST_ADAPTER", "local", {"local", "http"}
+    )
     internal_service_token: str | None = os.getenv("INTERNAL_SERVICE_TOKEN") or None
     app_project_root: str | None = os.getenv("APP_PROJECT_ROOT") or None
     app_database_path: str = os.getenv("APP_DATABASE_PATH", "var/aurumlab.db")

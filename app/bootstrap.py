@@ -10,6 +10,11 @@ from app.agent.interpreter import build_interpreter
 from app.agent.orchestrator import AurumAgent
 from app.agent.router import build_intent_router
 from app.approval import ApprovalRepository
+from app.backtest_service.port import (
+    BacktestExecutionPort,
+    BacktestHttpClient,
+    LocalBacktestExecutor,
+)
 from app.config import Settings, settings
 from app.domain.market_data import build_market_repository
 from app.evals.runner import EvalRunner
@@ -38,6 +43,7 @@ class Services:
     evaluator: EvalRunner
     mcp_clients: MCPClientManager
     telemetry: Telemetry
+    backtest_executor: BacktestExecutionPort
 
 
 def build_services(app_settings: Settings = settings) -> Services:
@@ -91,9 +97,21 @@ def build_services(app_settings: Settings = settings) -> Services:
             )
         ]
     )
+    market_repository = build_market_repository(app_settings)
+    backtest_executor: BacktestExecutionPort
+    if app_settings.agent_backtest_adapter == "http":
+        backtest_executor = BacktestHttpClient(
+            base_url=app_settings.backtest_service_url,
+            service_token=app_settings.internal_service_token,
+            timeout_seconds=app_settings.backtest_service_timeout_seconds,
+            allow_insecure_http=app_settings.backtest_allow_insecure_http,
+            telemetry=telemetry,
+        )
+    else:
+        backtest_executor = LocalBacktestExecutor(market_repository)
     agent = AurumAgent(
         interpreter=build_interpreter(app_settings),
-        market_repository=build_market_repository(app_settings),
+        market_repository=market_repository,
         search_provider=build_search_provider(app_settings),
         skills=skills,
         runs=runs,
@@ -104,6 +122,7 @@ def build_services(app_settings: Settings = settings) -> Services:
         research_cache_ttl_seconds=app_settings.research_cache_ttl_seconds,
         telemetry=telemetry,
         mcp_clients=mcp_clients,
+        backtest_executor=backtest_executor,
     )
     evaluator = EvalRunner(agent=agent, dataset_path=app_settings.resolved_eval_dataset_path)
     return Services(
@@ -120,4 +139,5 @@ def build_services(app_settings: Settings = settings) -> Services:
         evaluator=evaluator,
         mcp_clients=mcp_clients,
         telemetry=telemetry,
+        backtest_executor=backtest_executor,
     )

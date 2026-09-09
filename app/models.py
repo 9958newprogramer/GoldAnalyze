@@ -468,7 +468,14 @@ class ArtifactSnapshot(BaseModel):
 
     @classmethod
     def from_run(cls, run: RunResponse) -> ArtifactSnapshot:
-        executions = [item for item in run.tool_audit if item.get("phase") == "execution"]
+        executions = [
+            item
+            for item in run.tool_audit
+            if item.get("phase") == "execution"
+            # A cache hit must still resolve the immutable data version. Only
+            # count work that reuse actually avoids.
+            and item.get("tool") != "resolve_backtest_data_version"
+        ]
         return cls(
             interpreter=run.interpreter,
             strategy=run.strategy,

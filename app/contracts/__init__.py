@@ -1,8 +1,13 @@
 """Versioned contracts shared with the Java control plane."""
 
 from app.contracts.v1 import (
+    AgentExecuteRequest,
+    AgentExecuteResponse,
+    AgentResultArtifact,
     AgentRunRequestedCommand,
     AgentRunResultEvent,
+    BacktestDataVersionRequest,
+    BacktestDataVersionResponse,
     BacktestExecuteRequest,
     BacktestExecuteResponse,
     BacktestRunRequestedCommand,
@@ -13,8 +18,13 @@ from app.contracts.v1 import (
 )
 
 __all__ = [
+    "AgentExecuteRequest",
+    "AgentExecuteResponse",
+    "AgentResultArtifact",
     "AgentRunRequestedCommand",
     "AgentRunResultEvent",
+    "BacktestDataVersionRequest",
+    "BacktestDataVersionResponse",
     "BacktestExecuteRequest",
     "BacktestExecuteResponse",
     "BacktestRunRequestedCommand",

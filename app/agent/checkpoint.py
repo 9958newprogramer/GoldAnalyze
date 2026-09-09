@@ -11,6 +11,7 @@ from typing import Any
 
 from app.agent.interpreter import Interpretation
 from app.agent.planner import PlanRuntime
+from app.backtest_service.port import BacktestExecution
 from app.domain.backtest import BacktestResult
 from app.domain.market_data import Bar
 from app.memory import CacheLookup
@@ -80,6 +81,16 @@ def encode_step_output(stage: str, output: Any) -> Any:
             "trades": [item.model_dump(mode="json") for item in output.trades],
             "equity_curve": [item.model_dump(mode="json") for item in output.equity_curve],
         }
+    if stage == "execute_backtest":
+        return {
+            "data_version": output.data_version,
+            "profile": output.profile.model_dump(mode="json"),
+            "metrics": output.result.metrics.model_dump(mode="json"),
+            "trades": [item.model_dump(mode="json") for item in output.result.trades],
+            "equity_curve": [item.model_dump(mode="json") for item in output.result.equity_curve],
+            "warnings": output.warnings,
+            "result_digest": output.result_digest,
+        }
     if stage == "compile_market_query":
         return output.model_dump(mode="json")
     if stage == "query_market_data":
@@ -104,6 +115,7 @@ def encode_step_output(stage: str, output: Any) -> Any:
         return output
     if stage in {
         "validate_strategy_spec",
+        "resolve_backtest_data_version",
         "summarize_result",
         "summarize_market_query",
         "compose_general_response",
@@ -147,6 +159,18 @@ def decode_step_output(stage: str, value: Any) -> Any:
             metrics=BacktestMetrics.model_validate(value["metrics"]),
             trades=[Trade.model_validate(item) for item in value["trades"]],
             equity_curve=[EquityPoint.model_validate(item) for item in value["equity_curve"]],
+        )
+    if stage == "execute_backtest":
+        return BacktestExecution(
+            data_version=value["data_version"],
+            profile=DataProfile.model_validate(value["profile"]),
+            result=BacktestResult(
+                metrics=BacktestMetrics.model_validate(value["metrics"]),
+                trades=[Trade.model_validate(item) for item in value["trades"]],
+                equity_curve=[EquityPoint.model_validate(item) for item in value["equity_curve"]],
+            ),
+            warnings=list(value["warnings"]),
+            result_digest=value["result_digest"],
         )
     if stage == "compile_market_query":
         return MarketQuerySpec.model_validate(value)
