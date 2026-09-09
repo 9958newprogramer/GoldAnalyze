@@ -23,7 +23,9 @@
 | v0.7-approval | 风险分级与人工审批状态机 | 已验证，checkpoint `975d98d` | allow/deny/review 完整闭环；审批不可伪造、过期或重复使用 |
 | v0.8-async | Redis Streams Worker 与 SSE 长任务 | 已验证，checkpoint `4f5206f` | 幂等、取消、超时、有限重试、Checkpoint 恢复和断线重连测试；真实 Redis smoke 与浏览器闭环通过 |
 | v0.9-observability | OpenTelemetry 与运行指标 | 已验证，checkpoint `5c4d0af` | HTTP→Agent→Plan→Tool→Store 与 Job Producer/Consumer Trace 连通；OTLP Trace/Metrics 可导出 |
-| v1.0-resume | 招聘展示与质量证据包 | 未开始 | 100+ Eval、CI、Docker、非金融 Skill、演示脚本、简历指标报告 |
+| v1.0a-eval-ci | 100+ Eval 与 CI 质量门禁 | 已验证，checkpoint `3311f84` | 100+ 唯一案例、覆盖契约、CI + Redis Service、全量门禁通过 |
+| v1.0b-non-financial-skill | 非金融 Skill 与真实 MCP 业务调用 | 已验证，checkpoint `ba6e33a` | 第五类意图完整经过 Router→Skill→Plan→MCP→Artifact；审批、恢复、安全与评测通过 |
+| v1.0c-demo-package | Docker、一键演示与最终简历证据包 | 进行中 | 容器 healthcheck、演示脚本、可复现指标报告、最终真实性审计 |
 
 状态只能使用：`未开始`、`进行中`、`已验证`、`阻塞`。不能因为代码已写就标记“已验证”。
 
@@ -31,12 +33,12 @@
 
 | 简历主张 | 当前证据 | 缺口 |
 |---|---|---|
-| LLM Router + Bounded Planner + 版本化 Skill | 4 类类型化意图、4 个 Skill、LLM 失败规则降级；类型化计划、独立校验与运行时逐步授权 | 当前为确定性线性计划；尚无分支、并行和重规划 |
-| MCP Server/Client + 动态发现 | Agent MCP Server；进程内/stdio Client；namespaced Catalog；Schema Pin、超时、健康与治理集成测试 | 尚无远程 HTTP/OAuth；默认远端 Tool 尚未进入业务 Skill |
+| LLM Router + Bounded Planner + 版本化 Skill | 5 类类型化意图、5 个 Skill、LLM 失败规则降级；类型化计划、独立校验与运行时逐步授权；非金融事故复盘证明领域可迁移 | 当前为确定性线性计划；尚无分支、并行和重规划 |
+| MCP Server/Client + 动态发现 | Agent MCP Server；进程内/stdio Client；namespaced Catalog；Schema Pin、超时、健康与治理集成测试；`incident-review` 真实消费动态 MCP Tool | 尚无远程 HTTP/OAuth；Binding 只允许部署方固定 Provider |
 | Tool Governance + 人工审批 | Tool effect/risk、most-restrictive allow/deny/review；hash-only 一次性凭证；Run/Plan/Step/Tool/参数绑定；Web/API/MCP 恢复；攻击、过期、重放与并发测试 | 当前仅为本地单用户控制面；尚无企业身份认证、RBAC 与多租户隔离 |
 | Redis Worker + SSE + 恢复 | Redis Streams Consumer Group、双重租约、有限重试/死信、软取消、步骤超时、JSON Checkpoint、SSE 续传与异步 HITL；96 tests + 真实 Redis smoke + 浏览器证据 | 当前为单节点 SQLite 事件轮询；尚无多租户鉴权、Redis HA 与跨节点 SSE fan-out |
 | OpenTelemetry | HTTP/Agent/Plan/Step/Tool/Store/Job/Checkpoint 手工插桩；W3C 上下文跨 Worker；有界本地证据、OTLP、Jaeger/Prometheus 配置；101 tests + 浏览器证据 | Collector/Jaeger Compose 因本机无 Docker 未实际启动；生产告警、SLO 与长期后端留待部署环境 |
-| Artifact Memory + Agent Eval | 两级复用、TTL/版本失效、16 条 v5 Golden Set，Eval 校验 Plan/Event 及审批审计链一致性 | 需扩充至 100+、接入 CI 并补对抗覆盖 |
+| Artifact Memory + Agent Eval | 两级复用、TTL/版本失效；120 条 v7 Golden Set（5 类意图、16 对抗、24 审批、8 缓存）；Coverage Contract 与 GitHub Actions/Redis 门禁 | 评测为确定性本地基线，尚未引入非阻断 LLM-as-Judge 或真实线上流量 |
 
 ## 已验证版本记录
 
@@ -354,11 +356,51 @@
 
 **Git checkpoint**：`3311f84`
 
+### v1.0b-non-financial-skill — 2026-09-09
+
+**完成内容**
+
+- 新增第五类 `incident_review` 路由与 `incident-review@1.0.0`，把自然语言错误率、P95 延迟、持续时间和影响请求数编译为有界 `IncidentSpec`。
+- 使用服务端确定性规则生成 `SEV-1`—`SEV-4` 风险等级、证据化 findings 与 mitigate/observe/prevent 行动项；`root_cause_status` 固定为 `unverified`，不执行变更、通知、Shell、SQL 或用户代码。
+- 将动态发现的 `mcp__runtime__profile_text` 真正加入 Skill Allowlist 和五次 Tool Budget；调用经 Schema/大小/Injection 门禁与 `external/medium` 人工审批，再由四个本地只读 Tool 生成 `IncidentReviewResult`。
+- 打通同步 Run、异步 Job/Checkpoint 和 Agent MCP Server 的事故复盘路径；MCP Server lifespan 预启动下游 Client，直接 Agent/API 测试路径则在单次 Run 内安全拥有并释放惰性会话。
+- Artifact Memory 支持事故规格指纹、exact hit 和五次 Tool 节省；Checkpoint 显式编解码 MCP 结构结果及所有 Incident 类型。
+- 新增高置信凭证赋值/Bearer 检测：同步 Run 在零 Tool 调用时拒绝并脱敏持久化文本，异步 Job 在任何 SQLite/Redis 持久化前返回 422。
+- Golden Set 升级为 v7 共 120 条：新增 12 条非金融事故复盘，每条都真实执行 `review → approve → consume → MCP execute`；总审批案例增至 24 条。
+- Web、MCP Resource、README、架构、Eval、MCP Client 与求职表述文档同步展示第五类 Artifact 和安全边界。
+
+**关键优化与取舍**
+
+- 选择服务事故复盘而不是继续增加金融策略，直接证明 Router、Skill、Planner、MCP、Governance、Memory、Checkpoint、Trace 与 Eval 是可迁移的 Agent Runtime。
+- MCP Tool 只做有界结构统计，业务分析由确定性本地 Tool 完成；既提供真实跨协议调用证据，也避免远端内容控制根因或处置建议。
+- 首次全量测试暴露 AnyIO 生命周期缺陷：在 HTTP/MCP 请求内懒启动并跨请求保留 in-process MCP Client 会破坏取消域栈。修复为 Host lifespan 所有或单 Run 所有，并新增 API Eval 与 `MCP → Agent → MCP` 回归覆盖。
+- 事故 Artifact 默认无 TTL，但只有规格和 Schema 版本完全一致才复用；缺少指标字段会降低证据完整度并返回 warning，不填充虚构值。
+- Secret 检测仅覆盖高置信赋值与 Bearer 形态，降低普通事故文本误杀；当前不是通用 DLP，文档明确禁止输入真实日志或 PII。
+
+**验证证据**
+
+- 失败基线：首次 MCP Server 集成测试因嵌套 AnyIO cancel scope 失败；首次全量验证另发现健康页旧 Skill 数、审批案例旧计数和无 lifespan TestClient 下的同类会话泄漏，均保留为回归测试后修复。
+- 最终命令：`make verify && .venv/bin/python -m pip check && git diff --check && test "$(wc -l < evals/golden.v7.jsonl | tr -d ' ')" = "120"`。
+- 最终结果：Ruff check/format 通过，Pytest `117 passed, 1 skipped`，v7 Eval `120/120`、score `100.00`；覆盖 5 类意图、16 条对抗、24 条审批、8 条缓存；依赖无冲突，diff 无空白问题。
+- 唯一 skip 仍是本机无 Redis/Docker 时的真实 Redis 集成测试；v0.8c 已用官方 Redis 8.2.9 独立验证协议，CI 配置也提供 Redis Service，但不声称本轮本机 Docker 已运行。
+
+**已知限制**
+
+- Incident 编译器当前只接受中文模板附近的四类量化指标和 ASCII 服务名；不解析日志、部署记录或监控链接，也不执行自动根因分析。
+- 当前 MCP Provider 为部署方固定的进程内/stdio 服务；尚无远程 HTTP、OAuth Scope、RBAC 或多租户隔离。
+- GitHub Actions 已配置但仓库当前无远程，尚无可引用的云端绿色 Run；本地同一门禁已通过。
+
+**下一步**
+
+- 进入 v1.0c：完成统一 Docker Compose 与 healthcheck、一键面试演示脚本、机器可读指标报告、最终四条简历文案和逐项真实性审计。
+
+**Git checkpoint**：功能提交 `31cb78a`，生命周期回归提交 `ba6e33a`
+
 ## 当前工作区
 
 - 目标分支：`codex/resume-ready-agent-runtime`
-- 当前版本：`0.9.0` + `v1.0a`
-- 当前阶段：`v1.0a-eval-ci` 已验证；下一阶段为 `v1.0b-non-financial-skill`
+- 当前版本：`0.9.0` + `v1.0b`
+- 当前阶段：`v1.0b-non-financial-skill` 已验证；下一阶段为 `v1.0c-demo-package`
 - 入口：`app/agent/orchestrator.py`
 - 数据契约：`app/models.py`
 - Skill Manifest：`skills/*/skill.json`
@@ -366,9 +408,9 @@
 
 ## 下一步：v1.0-resume
 
-1. 增加一个真正经 Router→Skill→Plan→Tool→Artifact 的非金融工作流，证明 Runtime 可迁移性。
-2. 补齐完整 Docker Compose/healthcheck，并生成可复现指标报告。
-3. 完成一键演示脚本、架构图、面试讲解、最终简历四条与真实性边界。
+1. 补齐完整 Docker Compose/healthcheck，并生成可复现指标报告。
+2. 完成一键演示脚本、架构图、面试讲解、最终简历四条与真实性边界。
+3. 按最终目标六项逐条检查实现、测试、文档和可运行证据后，将版本提升到 1.0.0。
 
 ## 中断恢复步骤
 
