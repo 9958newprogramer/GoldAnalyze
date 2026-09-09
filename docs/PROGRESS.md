@@ -25,7 +25,7 @@
 | v0.9-observability | OpenTelemetry 与运行指标 | 已验证，checkpoint `5c4d0af` | HTTP→Agent→Plan→Tool→Store 与 Job Producer/Consumer Trace 连通；OTLP Trace/Metrics 可导出 |
 | v1.0a-eval-ci | 100+ Eval 与 CI 质量门禁 | 已验证，checkpoint `3311f84` | 100+ 唯一案例、覆盖契约、CI + Redis Service、全量门禁通过 |
 | v1.0b-non-financial-skill | 非金融 Skill 与真实 MCP 业务调用 | 已验证，checkpoint `ba6e33a` | 第五类意图完整经过 Router→Skill→Plan→MCP→Artifact；审批、恢复、安全与评测通过 |
-| v1.0c-demo-package | Docker、一键演示与最终简历证据包 | 进行中 | 容器 healthcheck、演示脚本、可复现指标报告、最终真实性审计 |
+| v1.0c-demo-package | Docker、一键演示与最终简历证据包 | 已验证，checkpoint `a457f64` | 容器 healthcheck、演示脚本、可复现指标报告、最终真实性审计 |
 
 状态只能使用：`未开始`、`进行中`、`已验证`、`阻塞`。不能因为代码已写就标记“已验证”。
 
@@ -396,21 +396,59 @@
 
 **Git checkpoint**：功能提交 `31cb78a`，生命周期回归提交 `ba6e33a`
 
+### v1.0c-demo-package — 2026-09-09
+
+**完成内容**
+
+- 版本提升到 `1.0.0`；新增精确版本生产依赖锁、非 root 应用镜像与统一 Compose，编排 API、Worker、Redis 8.2.9、OpenTelemetry Collector 和 Jaeger。
+- API/Worker 根文件系统只读，移除 Linux capabilities，启用 `no-new-privileges`，公开端口仅绑定 loopback；镜像、API 与 Worker 均有 healthcheck。
+- 引入显式 `APP_PROJECT_ROOT`，解决非 editable wheel 安装后 Skill/Eval 资源定位问题；在全新 Python 3.12 虚拟环境完成 lockfile、wheel、静态资源和 Agent 运行 smoke。
+- 新增 `demo_resume.py`，一键生成脱敏 JSON 证据，覆盖零 Tool 拒绝、MCP 审批/恢复、Incident Artifact、exact hit、Trace/Metrics 和完整 Eval。
+- GitHub Actions 新增容器 smoke Job：校验 Compose、构建镜像、等待全栈健康并在容器内执行代表性 Agent 证据脚本。
+- 完成最终四条简历成稿、指标表、部署文档、面试展开问题和真实性边界；浏览器已验收 Incident 审批恢复与 exact-hit 展示。
+
+**关键优化与取舍**
+
+- 求职证据包以“可重放的代表性链路 + 机器可读指标”取代不可核验的线上收益；所有简历数字均可由 `make release-check` 复现。
+- 容器使用精确版本 lock，但未生成 hash lock/SBOM；这是之后供应链增强项，不写成 v1.0 已完成能力。
+- SQLite 仍为单机业务状态真相源，Docker Compose 用于本地/面试演示；不宣称高可用、多租户或云端生产部署。
+- 本机缺少 Docker CLI，因此用静态容器合约测试、全新 wheel 环境 smoke 与 CI 容器 Job 弥补本地证据，并在所有文档中明确不冒充已有云端绿色运行。
+
+**验证证据**
+
+- 最终命令：`make release-check && git diff --check`。
+- Ruff check/format 通过；Pytest `124 passed, 1 skipped`；v7 Eval `120/120`、score `100.00`，覆盖 5 类意图、16 条对抗、24 条审批和 8 条缓存。
+- 代表性演示 8 项断言全部通过：5 个 Skill、Incident 链 5 次 Tool（含 1 次动态 MCP）、exact hit 节省 5 次 Tool，证据快照含 41 spans / 56 metric series。
+- `pip check` 无依赖冲突；`pip-audit -r requirements.lock` 未发现已知漏洞；新虚拟环境 wheel smoke 和浏览器真实 API/UI 验收通过。
+- 唯一 skip 是需本地 Redis 的 opt-in 集成测试；v0.8c 已进行真实 Redis 8.2.9 协议 smoke，CI 也配置同版本 Service。
+
+**已知限制**
+
+- 开发机没有 Docker CLI，完整 Compose 栈尚无本机运行记录；仓库尚无远程，也没有可引用的 GitHub Actions 绿色 Run。
+- LLM Router 离线演示使用规则 fallback；HITL 是本地单用户控制面；没有远程 MCP OAuth/RBAC、Redis HA 或跨节点 SSE fan-out。
+- 项目无实盘交易，不自动执行事故处置；黄金与事故只是 Agent Runtime 的两个可验证领域适配器。
+
+**后续可选增强**
+
+- 推送远程后记录实际 CI 容器绿色证据，并可补一段 3—5 分钟面试演示录屏；两者都不是 v1.0 简历可用版的完成前提。
+
+**Git checkpoint**：`a457f64`
+
 ## 当前工作区
 
 - 目标分支：`codex/resume-ready-agent-runtime`
-- 当前版本：`0.9.0` + `v1.0b`
-- 当前阶段：`v1.0b-non-financial-skill` 已验证；下一阶段为 `v1.0c-demo-package`
+- 当前版本：`1.0.0`
+- 当前阶段：`v1.0c-demo-package` 已验证，简历可用版完成
 - 入口：`app/agent/orchestrator.py`
 - 数据契约：`app/models.py`
 - Skill Manifest：`skills/*/skill.json`
-- 验证命令：`make verify && .venv/bin/aurumlab-eval --json`
+- 验证命令：`make release-check`
 
-## 下一步：v1.0-resume
+## 下一步：可选增强
 
-1. 补齐完整 Docker Compose/healthcheck，并生成可复现指标报告。
-2. 完成一键演示脚本、架构图、面试讲解、最终简历四条与真实性边界。
-3. 按最终目标六项逐条检查实现、测试、文档和可运行证据后，将版本提升到 1.0.0。
+1. 推送 Git 远程，确认 `verify` 与 `container-smoke` 两个 CI Job 实际绿色。
+2. 录制 3—5 分钟演示：攻击拒绝 → Incident MCP 审批恢复 → exact hit → Trace/Metric 证据。
+3. 若要进一步工程化，再补 hash lock/SBOM、企业身份/RBAC 和远程 MCP Transport；不影响当前简历表述。
 
 ## 中断恢复步骤
 
