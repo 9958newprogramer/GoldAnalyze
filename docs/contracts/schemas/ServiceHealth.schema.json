@@ -1,0 +1,52 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "dependencies": {
+      "additionalProperties": {
+        "enum": [
+          "ok",
+          "degraded",
+          "unavailable"
+        ],
+        "type": "string"
+      },
+      "title": "Dependencies",
+      "type": "object"
+    },
+    "schema_version": {
+      "const": "service-health-v1",
+      "default": "service-health-v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "service": {
+      "enum": [
+        "agent-service",
+        "backtest-service"
+      ],
+      "title": "Service",
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "ok",
+        "degraded"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "version": {
+      "maxLength": 32,
+      "minLength": 1,
+      "title": "Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "service",
+    "status",
+    "version"
+  ],
+  "title": "ServiceHealth",
+  "type": "object"
+}

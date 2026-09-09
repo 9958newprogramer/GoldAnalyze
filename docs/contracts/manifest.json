@@ -1,0 +1,17 @@
+{
+  "contract_version": "1.0.0",
+  "files": {
+    "asyncapi.v1.json": "256dcf92da9c8560a0aded0ce4ef5f39082009e8e1d4e7741504316316d46777",
+    "backtest-service.openapi.json": "22fab848c040e459c5afb14585b1a38ad011afd5fac712ccdf6a2c9da658f13d",
+    "schemas/AgentRunRequestedCommand.schema.json": "50cd1ef76e8a7e5537b3193ebd9eb96d30680cdc611a31005873ef7cb65698c7",
+    "schemas/AgentRunResultEvent.schema.json": "39e8d5e00cd8ee920ba34bd45739a1c69f9d93fd771b2c337941a082479c169d",
+    "schemas/BacktestExecuteRequest.schema.json": "604f8a65573d3bdede7cac8d2ad19ffde4bae121d01dd3be92c5067c69358ab3",
+    "schemas/BacktestExecuteResponse.schema.json": "fb970b6825040baf50dd8617d6569230c6a9b598f7bf032cfecd8e77049d5bd1",
+    "schemas/BacktestRunRequestedCommand.schema.json": "568ef93c8893c33360b0df60c320c0e740a377d7ba5b6a28fa38a61217524451",
+    "schemas/BacktestRunResultEvent.schema.json": "0ff641f82cdd3d41352296b153a21eb15be1b27bd3666329608f89513d72d7f8",
+    "schemas/MessageMetadata.schema.json": "5876e7e1072c2d042d24991741ce64cafa2a12f1f4b6efddd656cd12c22deeaf",
+    "schemas/ProblemDetails.schema.json": "2a24bc16a9a6bcf6cc54c6455c6f3d6001b18e95356fbf78b1f87fa6a87b7e52",
+    "schemas/ServiceHealth.schema.json": "5827b5e0e77b1d3d0bfaaa328983cee1d95717365a15f59b22734ba3434fb17f"
+  },
+  "schema_version": "contract-manifest-v1"
+}

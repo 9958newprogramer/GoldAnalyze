@@ -1,6 +1,6 @@
 PYTHON ?= python3
 
-.PHONY: install run worker redis-up redis-down observability-up observability-down stack-up stack-down mcp eval demo-memory demo-resume demo-resume-fast container-config test lint verify release-check
+.PHONY: install run backtest-service worker redis-up redis-down observability-up observability-down stack-up stack-down mcp eval contracts contracts-check demo-memory demo-resume demo-resume-fast container-config test lint verify release-check
 
 install:
 	$(PYTHON) -m venv .venv
@@ -8,6 +8,9 @@ install:
 
 run:
 	.venv/bin/aurumlab
+
+backtest-service:
+	.venv/bin/python -m app.backtest_service.api
 
 worker:
 	.venv/bin/aurumlab-worker
@@ -36,6 +39,13 @@ mcp:
 eval:
 	.venv/bin/aurumlab-eval
 
+contracts:
+	.venv/bin/python -m app.contracts.exporter
+
+contracts-check:
+	.venv/bin/python -m app.contracts.exporter
+	git diff --exit-code -- docs/contracts
+
 demo-memory:
 	.venv/bin/python scripts/demo_memory.py
 
@@ -55,6 +65,6 @@ lint:
 	.venv/bin/ruff check .
 	.venv/bin/ruff format --check .
 
-verify: lint test eval
+verify: lint test eval contracts-check
 
 release-check: verify demo-resume

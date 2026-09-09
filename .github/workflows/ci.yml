@@ -44,7 +44,7 @@ jobs:
       - name: Install project and test dependencies
         run: python -m pip install -e '.[dev]'
 
-      - name: Run lint, tests, Redis integration, and 100+ Agent eval gate
+      - name: Run lint, tests, Redis integration, Agent eval, and contract drift gates
         run: make verify
 
   container-smoke:

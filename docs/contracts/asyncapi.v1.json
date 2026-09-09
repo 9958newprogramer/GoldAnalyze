@@ -1,0 +1,108 @@
+{
+  "asyncapi": "3.0.0",
+  "channels": {
+    "agentCommands": {
+      "address": "goldanalyze.agent.commands.v1",
+      "messages": {
+        "agentRunRequested": {
+          "payload": {
+            "$ref": "#/components/schemas/AgentRunRequestedCommand"
+          }
+        }
+      }
+    },
+    "agentEvents": {
+      "address": "goldanalyze.agent.events.v1",
+      "messages": {
+        "agentRunResult": {
+          "payload": {
+            "$ref": "#/components/schemas/AgentRunResultEvent"
+          }
+        }
+      }
+    },
+    "backtestCommands": {
+      "address": "goldanalyze.backtest.commands.v1",
+      "messages": {
+        "backtestRunRequested": {
+          "payload": {
+            "$ref": "#/components/schemas/BacktestRunRequestedCommand"
+          }
+        }
+      }
+    },
+    "backtestEvents": {
+      "address": "goldanalyze.backtest.events.v1",
+      "messages": {
+        "backtestRunResult": {
+          "payload": {
+            "$ref": "#/components/schemas/BacktestRunResultEvent"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "AgentRunRequestedCommand": {
+        "$ref": "./schemas/AgentRunRequestedCommand.schema.json"
+      },
+      "AgentRunResultEvent": {
+        "$ref": "./schemas/AgentRunResultEvent.schema.json"
+      },
+      "BacktestExecuteRequest": {
+        "$ref": "./schemas/BacktestExecuteRequest.schema.json"
+      },
+      "BacktestExecuteResponse": {
+        "$ref": "./schemas/BacktestExecuteResponse.schema.json"
+      },
+      "BacktestRunRequestedCommand": {
+        "$ref": "./schemas/BacktestRunRequestedCommand.schema.json"
+      },
+      "BacktestRunResultEvent": {
+        "$ref": "./schemas/BacktestRunResultEvent.schema.json"
+      },
+      "MessageMetadata": {
+        "$ref": "./schemas/MessageMetadata.schema.json"
+      },
+      "ProblemDetails": {
+        "$ref": "./schemas/ProblemDetails.schema.json"
+      },
+      "ServiceHealth": {
+        "$ref": "./schemas/ServiceHealth.schema.json"
+      }
+    }
+  },
+  "defaultContentType": "application/json",
+  "info": {
+    "description": "Fixed Kafka channels between the Java control plane and Python compute services. Topic names are deployment configuration and never come from message payloads.",
+    "title": "GoldAnalyze Java/Python Events",
+    "version": "1.0.0"
+  },
+  "operations": {
+    "receiveAgentCommand": {
+      "action": "receive",
+      "channel": {
+        "$ref": "#/channels/agentCommands"
+      }
+    },
+    "receiveBacktestCommand": {
+      "action": "receive",
+      "channel": {
+        "$ref": "#/channels/backtestCommands"
+      }
+    },
+    "sendAgentEvent": {
+      "action": "send",
+      "channel": {
+        "$ref": "#/channels/agentEvents"
+      }
+    },
+    "sendBacktestEvent": {
+      "action": "send",
+      "channel": {
+        "$ref": "#/channels/backtestEvents"
+      }
+    }
+  }
+}

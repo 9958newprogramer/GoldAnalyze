@@ -4,6 +4,20 @@ AurumLab 是一个**面向 Agent 开发求职**的可运行作品集项目。黄
 
 > 只做研究与历史实验，不连接实盘，不执行用户提供的 Python、SQL 或 Shell，不构成投资建议。
 
+## Java / Python 微服务改造
+
+`codex/python-microservices` 分支正在把 v1.0 单体演示拆成 Java Control Plane、Python Agent Service 和 Python Backtest Service。Java 负责公开 API、鉴权、Run/Job/HITL 状态和业务持久化；Python 只负责 Agent 执行和确定性计算，不共享 Java 数据库。
+
+当前已抽取 Backtest Application 和内部 API，并导出可供 Spring/Jackson 生成 DTO 的 OpenAPI、AsyncAPI 与 JSON Schema：
+
+```bash
+make backtest-service  # http://127.0.0.1:8020
+make contracts
+make contracts-check
+```
+
+完整责任边界、Kafka/Redis 语义、迁移计划、Java DTO 参考和风险登记见 [`docs/MICROSERVICES.md`](docs/MICROSERVICES.md)；机器可读契约见 [`docs/contracts`](docs/contracts)。旧 AurumLab API 在迁移期间保持可运行。
+
 ## v1.0 已实现的闭环
 
 ```mermaid

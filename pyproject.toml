@@ -39,6 +39,7 @@ aurumlab-mcp-tools = "app.mcp_provider:main"
 aurumlab-eval = "app.evals.cli:main"
 aurumlab-worker = "app.jobs.cli:main"
 aurumlab-demo = "app.resume_demo:main"
+goldanalyze-backtest = "app.backtest_service.api:run"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

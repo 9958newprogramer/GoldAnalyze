@@ -53,6 +53,9 @@ class Settings:
     app_name: str = "AurumLab"
     app_host: str = os.getenv("APP_HOST", "127.0.0.1")
     app_port: int = _port_from_env("APP_PORT", 8010)
+    backtest_service_host: str = os.getenv("BACKTEST_SERVICE_HOST", "127.0.0.1")
+    backtest_service_port: int = _port_from_env("BACKTEST_SERVICE_PORT", 8020)
+    internal_service_token: str | None = os.getenv("INTERNAL_SERVICE_TOKEN") or None
     app_project_root: str | None = os.getenv("APP_PROJECT_ROOT") or None
     app_database_path: str = os.getenv("APP_DATABASE_PATH", "var/aurumlab.db")
     eval_dataset_path: str = os.getenv("EVAL_DATASET_PATH", "evals/golden.v7.jsonl")

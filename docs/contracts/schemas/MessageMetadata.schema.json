@@ -1,0 +1,94 @@
+{
+  "additionalProperties": false,
+  "description": "Metadata carried in Kafka headers or a message envelope.\n\nTopic names and reply destinations are deployment configuration, never caller\ninput. This prevents an untrusted request from turning into an SSRF-like broker\nrouting primitive.",
+  "properties": {
+    "attempt": {
+      "default": 1,
+      "maximum": 3,
+      "minimum": 1,
+      "title": "Attempt",
+      "type": "integer"
+    },
+    "causation_id": {
+      "anyOf": [
+        {
+          "maxLength": 128,
+          "minLength": 8,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Causation Id"
+    },
+    "correlation_id": {
+      "maxLength": 128,
+      "minLength": 8,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+      "title": "Correlation Id",
+      "type": "string"
+    },
+    "message_id": {
+      "format": "uuid",
+      "title": "Message Id",
+      "type": "string"
+    },
+    "occurred_at": {
+      "format": "date-time",
+      "title": "Occurred At",
+      "type": "string"
+    },
+    "producer": {
+      "enum": [
+        "control-plane",
+        "agent-service",
+        "backtest-service"
+      ],
+      "title": "Producer",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "message-metadata-v1",
+      "default": "message-metadata-v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "traceparent": {
+      "anyOf": [
+        {
+          "pattern": "^00-[0-9a-f]{32}-[0-9a-f]{16}-0[01]$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Traceparent"
+    },
+    "tracestate": {
+      "anyOf": [
+        {
+          "maxLength": 512,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Tracestate"
+    }
+  },
+  "required": [
+    "message_id",
+    "correlation_id",
+    "producer",
+    "occurred_at"
+  ],
+  "title": "MessageMetadata",
+  "type": "object"
+}

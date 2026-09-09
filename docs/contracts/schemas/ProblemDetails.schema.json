@@ -1,0 +1,76 @@
+{
+  "additionalProperties": false,
+  "description": "Stable RFC 7807-style error body; internal exception text is excluded.",
+  "properties": {
+    "code": {
+      "pattern": "^[A-Z][A-Z0-9_]{2,63}$",
+      "title": "Code",
+      "type": "string"
+    },
+    "detail": {
+      "maxLength": 300,
+      "minLength": 1,
+      "title": "Detail",
+      "type": "string"
+    },
+    "request_id": {
+      "anyOf": [
+        {
+          "maxLength": 128,
+          "minLength": 8,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Request Id"
+    },
+    "retryable": {
+      "default": false,
+      "title": "Retryable",
+      "type": "boolean"
+    },
+    "status": {
+      "maximum": 599,
+      "minimum": 400,
+      "title": "Status",
+      "type": "integer"
+    },
+    "title": {
+      "maxLength": 120,
+      "minLength": 1,
+      "title": "Title",
+      "type": "string"
+    },
+    "trace_id": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{32}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Trace Id"
+    },
+    "type": {
+      "default": "about:blank",
+      "maxLength": 256,
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "title",
+    "status",
+    "code",
+    "detail"
+  ],
+  "title": "ProblemDetails",
+  "type": "object"
+}
