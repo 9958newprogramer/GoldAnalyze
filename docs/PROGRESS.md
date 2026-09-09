@@ -1,4 +1,4 @@
-# AurumLab 简历可用版迭代账本
+# GoldAnalyze / AurumLab 迭代账本
 
 这是项目的唯一进度真相源。每个小版本完成时必须同步更新本文件，并提交一个 Git checkpoint。若 Codex、终端或会话中断，从“中断恢复步骤”和“下一步”继续，不依赖聊天记录。
 
@@ -12,6 +12,17 @@
 4. Redis Streams Worker、SSE、幂等、取消、超时、有限重试、Checkpoint。
 5. OpenTelemetry 端到端 Trace 与可查询运行指标。
 6. Artifact Memory、100+ Golden Set/对抗案例、CI、Docker 和至少一个非金融 Skill。
+
+v1.0 上述目标已完成。当前活跃目标是在不破坏可复用 Python 能力的前提下，改造为 Java/Python 微服务：Java Spring Boot 负责公开控制面和业务持久化；Python 拆分 Agent Service 与 Backtest Engine，通过版本化 HTTP/Kafka 契约与 Java 对接。
+
+## 微服务路线与验收门槛
+
+| 版本 | 目标 | 状态 | 完成门槛 |
+|---|---|---|---|
+| v1.1a-contract-backtest | 跨语言契约与 Backtest HTTP | 已验证，checkpoint `4b7c862` | 严格 Schema、契约漂移门禁、真实 HTTP 计算、旧 Agent 全量回归 |
+| v1.1b-agent-service | Agent Port 与独立服务 | 未开始 | Python 不以业务 SQLite 为跨服务真相源；通过类型化 Client 调 Backtest |
+| v1.2-kafka-runtime | Kafka Worker 与 Redis 幂等 | 未开始 | 固定 Topic、DLQ、有界重试、payload-hash 幂等、租约与重复投递测试 |
+| v1.3-microservice-release | 部署、CI/OTel 与求职证据 | 未开始 | 双镜像、Kafka/Redis/OTel 组合测试、一键演示、Java 交接文档和真实性审计 |
 
 ## 版本路线与验收门槛
 
@@ -434,26 +445,66 @@
 
 **Git checkpoint**：`a457f64`
 
+### v1.1a-contract-backtest — 2026-09-09
+
+**完成内容**
+
+- 建立独立 `app/contracts/v1.py`，为 Java/Python 定义强类型 Backtest HTTP 请求/结果、RFC 7807 风格错误、服务健康、Kafka Message Metadata、Agent/Backtest Command 与 Result Event。
+- 契约全部 `extra=forbid`，限制 ID、Prompt、日期范围、bars、trades、deadline、traceparent、producer 和 outcome 一致性；故意不接受动态 `reply_topic` 或 callback URL。
+- 抽取 `BacktestApplication`，复用现有只读 Market Repository 和确定性 SMA Engine，增加 expected data-version guard、工作量上限、结果 SHA-256 digest 和运行时度量。
+- 新增独立 Backtest FastAPI：`/health/live`、`/health/ready`、`/internal/v1/backtests/execute`；计算移入 threadpool，支持 W3C Trace Context、安全响应头、Service Bearer Token 和脱敏 `application/problem+json`。
+- 非 loopback 绑定却未配置至少 32 字符 Token 时 fail closed；鉴权失败不反射 Token，合约验证失败不反射攻击字段。
+- 新增可确定性重生成的 OpenAPI、AsyncAPI、9 份 JSON Schema 和 SHA-256 manifest；`make contracts-check` 已并入 CI 门禁。
+- 完成代码归属、REST/Kafka/Redis 选型、状态时序、安全、CI/OTel、工期、风险和 Java DTO 参考文档。
+
+**关键优化与取舍**
+
+- Java 数据库被定义为 Run/Job/Approval/Artifact 唯一业务真相源；Python 不共享表结构，只负责执行并产出带版本 Artifact/Checkpoint。
+- 第一版 Agent→Backtest 选 REST/JSON 而非 gRPC，因为当前负载没有序列化瓶颈证据，OpenAPI 对 Spring/Jackson 更易联调。
+- 跨服务长任务决定迁移到 Kafka at-least-once + 业务幂等；Redis 只做可重建缓存/租约，不冒充数据库或 exactly-once。
+- 仓库改名后旧 `.venv` shebang 失效，已用 Python 3.12.14 在新路径重建；全量测试又暴露 `pytest` console 不能依赖未打包的 `scripts` import，根因修复为将导出器移入正式 `app.contracts` 包，而非修改 `PYTHONPATH`。
+
+**验证证据**
+
+- 定向契约/安全/API 测试 `12 passed`；覆盖未知字段、无界日期、伪造 Trace/Producer、Service Auth、错误脱敏、data-version 冲突、过期 deadline、确定性 digest 和契约 hash。
+- `make verify`：Ruff check/format 通过，Pytest `136 passed, 1 skipped`，v7 Eval `120/120`、score `100.00`，契约重生成无 Diff。
+- 真实 Uvicorn HTTP smoke：`GET /health/ready` 返回 200/ok；`POST /internal/v1/backtests/execute` 返回 completed，加载 263 bars、输出 263 净值点与稳定 digest `313bcdfc1bbdc49a...`。
+- 新环境 `pip check` 无冲突；未修改的 `requirements.lock` 重新执行 `pip-audit` 结果为 `No known vulnerabilities found`。
+
+**已知限制**
+
+- `idempotency_key` 已进入契约，但 Redis payload-hash 去重/结果重放尚未实现，属于 v1.2；当前重复 HTTP 请求会安全重算。
+- Kafka Consumer/Producer、DLQ 和 Java Outbox/Inbox 尚未实现；AsyncAPI 当前是已锁定的对接契约，不是运行能力声明。
+- SQLite Market Adapter 仍先读取 symbol/timeframe 的全部行再在 Python 过滤日期；日期范围和结果已有界，但 SQL 下推与连接池待 Backtest 完整化时补齐。
+- Service Token 仅适合本地/受控网络；生产仍需 TLS/mTLS、Kafka SASL/ACL 和网络策略。
+
+**下一步**
+
+- 实现 v1.1b：抽象 Agent 的持久化 Port、新建独立 Agent internal API、引入强类型 Backtest Client，并证明旧 standalone 演示与新微服务路径可同时回归。
+
+**Git checkpoint**：`4b7c862`
+
 ## 当前工作区
 
-- 目标分支：`codex/resume-ready-agent-runtime`
+- 目标分支：`codex/python-microservices`
 - 当前版本：`1.0.0`
-- 当前阶段：`v1.0c-demo-package` 已验证，简历可用版完成
-- 入口：`app/agent/orchestrator.py`
-- 数据契约：`app/models.py`
+- 当前阶段：`v1.1a-contract-backtest` 已验证；下一阶段为 `v1.1b-agent-service`
+- Standalone 入口：`app/main.py`
+- Backtest Service 入口：`app/backtest_service/api.py`
+- 跨语言契约：`app/contracts/v1.py`、`docs/contracts/*`
 - Skill Manifest：`skills/*/skill.json`
-- 验证命令：`make release-check`
+- 验证命令：`make verify`
 
-## 下一步：可选增强
+## 下一步：v1.1b-agent-service
 
-1. 推送 Git 远程，确认 `verify` 与 `container-smoke` 两个 CI Job 实际绿色。
-2. 录制 3—5 分钟演示：攻击拒绝 → Incident MCP 审批恢复 → exact hit → Trace/Metric 证据。
-3. 若要进一步工程化，再补 hash lock/SBOM、企业身份/RBAC 和远程 MCP Transport；不影响当前简历表述。
+1. 从 `AurumAgent` 抽出 Run/Artifact/Approval/Checkpoint Port，保留 SQLite Adapter 供 standalone 演示。
+2. 新增 Agent Service internal API 与控制面结果投影，不将原始问题/审批 Token 返回到事件。
+3. 实现有界、鉴权、可传播 Trace 的 Backtest HTTP Client，替换 Agent 内的回测 Tool Adapter。
 
 ## 中断恢复步骤
 
 ```bash
-cd "/Users/9958files/Documents/ChatGPT/行情回测agent"
+cd "/Users/9958files/Documents/ChatGPT/GoldAnalyze"
 git status --short --branch
 git log --oneline -5
 sed -n '1,260p' docs/PROGRESS.md
