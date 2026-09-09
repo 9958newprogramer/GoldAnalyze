@@ -28,6 +28,7 @@ from app.bootstrap import build_services
 from app.config import settings
 from app.evals.models import EvalCase, EvalReport
 from app.evals.runner import load_eval_cases
+from app.jobs import SensitiveJobInputError
 from app.mcp_client import MCPToolCatalog
 from app.models import (
     AgentJob,
@@ -243,6 +244,8 @@ async def create_job(
         )
     except IdempotencyConflictError as exc:
         raise HTTPException(status_code=409, detail="幂等键已绑定到不同请求") from exc
+    except SensitiveJobInputError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except RedisError as exc:
         raise HTTPException(
             status_code=503,

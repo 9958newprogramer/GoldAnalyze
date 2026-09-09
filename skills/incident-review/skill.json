@@ -1,0 +1,22 @@
+{
+  "name": "incident-review",
+  "version": "1.0.0",
+  "description": "将服务事故事实编译为有界规格，通过只读确定性工具生成风险分级、发现和行动项 Artifact。",
+  "allowed_tools": [
+    "mcp__runtime__profile_text",
+    "validate_incident_spec",
+    "assess_incident_impact",
+    "build_incident_action_plan",
+    "summarize_incident_review"
+  ],
+  "max_tool_calls": 5,
+  "steps": [
+    "compile_incident_spec",
+    "cache_lookup",
+    "mcp__runtime__profile_text",
+    "validate_incident_spec",
+    "assess_incident_impact",
+    "build_incident_action_plan",
+    "summarize_incident_review"
+  ]
+}

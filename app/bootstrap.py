@@ -79,20 +79,6 @@ def build_services(app_settings: Settings = settings) -> Services:
         group_name=app_settings.job_consumer_group,
     )
     job_submission = JobSubmissionService(jobs, job_broker, telemetry)
-    agent = AurumAgent(
-        interpreter=build_interpreter(app_settings),
-        market_repository=build_market_repository(app_settings),
-        search_provider=build_search_provider(app_settings),
-        skills=skills,
-        runs=runs,
-        artifacts=artifacts,
-        approvals=approvals,
-        router=build_intent_router(app_settings),
-        market_cache_ttl_seconds=app_settings.market_cache_ttl_seconds,
-        research_cache_ttl_seconds=app_settings.research_cache_ttl_seconds,
-        telemetry=telemetry,
-    )
-    evaluator = EvalRunner(agent=agent, dataset_path=app_settings.resolved_eval_dataset_path)
     mcp_clients = MCPClientManager(
         [
             MCPServerBinding(
@@ -105,6 +91,21 @@ def build_services(app_settings: Settings = settings) -> Services:
             )
         ]
     )
+    agent = AurumAgent(
+        interpreter=build_interpreter(app_settings),
+        market_repository=build_market_repository(app_settings),
+        search_provider=build_search_provider(app_settings),
+        skills=skills,
+        runs=runs,
+        artifacts=artifacts,
+        approvals=approvals,
+        router=build_intent_router(app_settings),
+        market_cache_ttl_seconds=app_settings.market_cache_ttl_seconds,
+        research_cache_ttl_seconds=app_settings.research_cache_ttl_seconds,
+        telemetry=telemetry,
+        mcp_clients=mcp_clients,
+    )
+    evaluator = EvalRunner(agent=agent, dataset_path=app_settings.resolved_eval_dataset_path)
     return Services(
         settings=app_settings,
         skills=skills,

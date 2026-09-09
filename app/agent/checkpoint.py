@@ -22,6 +22,10 @@ from app.models import (
     ExecutionPlan,
     ExternalResearchResult,
     ExternalResearchSpec,
+    IncidentActionItem,
+    IncidentAssessment,
+    IncidentReviewResult,
+    IncidentSpec,
     IntentDecision,
     MarketQueryResult,
     MarketQuerySpec,
@@ -92,11 +96,18 @@ def encode_step_output(stage: str, output: Any) -> Any:
         }
     if stage == "summarize_external_research":
         return output.model_dump(mode="json")
+    if stage in {"compile_incident_spec", "assess_incident_impact", "summarize_incident_review"}:
+        return output.model_dump(mode="json")
+    if stage == "build_incident_action_plan":
+        return [item.model_dump(mode="json") for item in output]
+    if stage == "mcp__runtime__profile_text":
+        return output
     if stage in {
         "validate_strategy_spec",
         "summarize_result",
         "summarize_market_query",
         "compose_general_response",
+        "validate_incident_spec",
     }:
         return output
     raise ValueError(f"Checkpoint 不支持未知步骤输出：{stage}")
@@ -153,7 +164,19 @@ def decode_step_output(stage: str, value: Any) -> Any:
         }
     if stage == "summarize_external_research":
         return ExternalResearchResult.model_validate(value)
+    if stage == "compile_incident_spec":
+        return IncidentSpec.model_validate(value)
+    if stage == "assess_incident_impact":
+        return IncidentAssessment.model_validate(value)
+    if stage == "build_incident_action_plan":
+        return [IncidentActionItem.model_validate(item) for item in value]
+    if stage == "summarize_incident_review":
+        return IncidentReviewResult.model_validate(value)
+    if stage == "mcp__runtime__profile_text":
+        return dict(value)
     if stage == "validate_strategy_spec":
+        return list(value)
+    if stage == "validate_incident_spec":
         return list(value)
     if stage in {
         "summarize_result",

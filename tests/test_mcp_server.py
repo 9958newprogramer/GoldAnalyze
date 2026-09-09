@@ -19,6 +19,7 @@ async def test_mcp_discovers_and_calls_tools():
             "backtest-strategy",
             "query-market-data",
             "external-research",
+            "incident-review",
             "general-response",
         }
 
@@ -29,10 +30,44 @@ async def test_mcp_discovers_and_calls_tools():
         assert routed.structured_content["route"]["intent"] == "query_market_data"
         assert routed.structured_content["plan"]["validated"] is True
 
+        incident = await client.call_tool(
+            "handle_agent_request",
+            {
+                "question": (
+                    "复盘 checkout-api 服务事故：错误率12%，P95延迟1800ms，"
+                    "持续35分钟，影响2400个请求。"
+                ),
+                "cache_policy": "bypass",
+            },
+        )
+        assert incident.is_error is False
+        assert incident.structured_content["route"]["intent"] == "incident_review"
+        assert incident.structured_content["status"] == "pending_approval"
+        approval = incident.structured_content["approval"]
+        assert approval["tool_name"] == "mcp__runtime__profile_text"
+        grant = services.approvals.approve(
+            approval["approval_id"],
+            decided_by="test-control-plane",
+        )
+        resumed_incident = await client.call_tool(
+            "resume_agent_run",
+            {
+                "run_id": incident.structured_content["run_id"],
+                "approval_token": grant.approval_token,
+            },
+        )
+        assert resumed_incident.is_error is False
+        assert resumed_incident.structured_content["status"] == "completed"
+        assert (
+            resumed_incident.structured_content["incident_result"]["root_cause_status"]
+            == "unverified"
+        )
+
         resources = await client.list_resources()
         uris = {str(resource.uri) for resource in resources.resources}
         assert "aurum://skills" in uris
         assert "aurum://skills/backtest-strategy" in uris
+        assert "aurum://skills/incident-review" in uris
         assert "aurum://evals/latest" in uris
         assert "aurum://cache/stats" in uris
 

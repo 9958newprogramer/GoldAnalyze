@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from contextlib import asynccontextmanager
 from typing import Literal
 
 from mcp.server import MCPServer
@@ -13,6 +14,18 @@ from app.bootstrap import build_services
 from app.models import RunResponse, SkillListResponse
 
 services = build_services()
+
+
+@asynccontextmanager
+async def _mcp_lifespan(_server):
+    """Own downstream MCP Client sessions outside individual Tool requests."""
+    await services.mcp_clients.start()
+    services.mcp_clients.register_tools(services.agent.tools)
+    try:
+        yield {}
+    finally:
+        await services.mcp_clients.stop()
+
 
 mcp = MCPServer(
     name="aurumlab",
@@ -25,6 +38,7 @@ mcp = MCPServer(
         "This server is research-only and never places trades."
     ),
     version=__version__,
+    lifespan=_mcp_lifespan,
 )
 
 
@@ -65,6 +79,12 @@ def list_aurumlab_skills() -> SkillListResponse:
 def backtest_skill() -> str:
     """Read the active backtest Skill descriptor."""
     return services.skills.get("backtest-strategy").model_dump_json(indent=2)
+
+
+@mcp.resource("aurum://skills/incident-review", mime_type="application/json")
+def incident_review_skill() -> str:
+    """Read the active non-financial incident-review Skill descriptor."""
+    return services.skills.get("incident-review").model_dump_json(indent=2)
 
 
 @mcp.resource("aurum://skills", mime_type="application/json")

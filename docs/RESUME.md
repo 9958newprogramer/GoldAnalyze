@@ -56,6 +56,13 @@
 - 提供有界内存、Console 和 OTLP 三类可配置导出，配套固定版本 OpenTelemetry Collector、Jaeger 与 Prometheus scrape endpoint；Web/API 可直接展示脱敏 Span 和本地指标证据。
 - 制定 Observability Privacy Contract：Trace/Metrics 不记录 Prompt、Tool 参数/结果、URL、SQL、异常消息、API Key、审批 token 或 baggage，并以自动测试验证跨进程父子关系、Redis 数据最小化、Span buffer 上限和敏感 sentinel 不泄露。
 
+## v1.0a—v1.0b 新增的可写要点
+
+- 将 Golden Set 扩充至 120 条、5 类意图，包含 16 条安全对抗、24 条人工审批和 8 条 Artifact exact-hit；增加规模、唯一性、路由/场景配额与标签一致性 Coverage Contract，并通过 GitHub Actions + Redis Service 执行同一阻断门禁。
+- 新增非金融 `incident-review@1.0.0`，将自然语言事故指标编译为有界 `IncidentSpec`，通过确定性规则输出 SEV 风险等级、证据和只读行动项，根因始终标记为 `unverified`，证明 Runtime 不依赖金融领域。
+- 在事故复盘 Skill 中真实消费动态发现的 `mcp__runtime__profile_text`；远端 Tool 继续通过 Schema Pin、Prompt Injection 检查、Per-Skill Allowlist、五次预算、人工审批和完整 Audit，并覆盖同步、异步 Checkpoint 与 `MCP → Agent → MCP` 调用路径。
+- 增加高置信凭证检测与数据最小化：同步请求在零 Tool 调用时拒绝并脱敏持久化文本，异步 Job 在落库/入队前拒绝；Trace、Audit、Checkpoint 与 Redis 均不保存原始凭证。
+
 ## 面试时主动强调
 
 - 黄金仅用作有确定性输入输出的工具场景，工程重点是 Agent 的路由、能力边界、协议暴露、治理、可观测与评测。
@@ -64,4 +71,4 @@
 
 ## 下一版本增量表述（尚不可作为已完成能力）
 
-v1.0 才会完成 100+ Golden Set、CI、完整 Docker、非金融 Skill 和演示证据包。在对应版本验证前不能写成已完成。
+v1.0c 仍需完成统一 Docker Compose、自动化演示与最终指标报告。在对应版本验证前不能把“一键容器化运行”或最终测试数字写成已完成。

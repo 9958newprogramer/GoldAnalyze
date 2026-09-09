@@ -40,7 +40,7 @@ Tool 的描述、错误和结果均视为外部不可信数据。错误响应不
 
 ## 生命周期与故障隔离
 
-- FastAPI lifespan 启动 MCP Client、完成 discovery、再把合格 Adapter 注册到 Tool Registry；退出时关闭会话。
+- FastAPI 与 Agent MCP Server 都在各自 lifespan 启动下游 MCP Client、完成 discovery、再把合格 Adapter 注册到 Tool Registry；退出时关闭会话。CLI/直接 Agent 调用允许幂等懒启动。
 - 每个 Server 独立维护 `connected / degraded / unavailable / disconnected` 状态、发现耗时和安全的错误类型。
 - Server 连接或发现失败不会阻断本地 Router、Planner 和领域 Tool；调用超时会将 Server 降级，后续调用需先通过刷新恢复健康。
 - `GET /api/mcp/catalog` 返回可演示的 Catalog，`GET /api/health` 返回连接 Server 数与 Tool 数。
@@ -58,8 +58,14 @@ curl -s http://127.0.0.1:8010/api/mcp/catalog
 .venv/bin/pytest -q tests/test_mcp_client.py
 ```
 
+## 非金融 Skill 的真实消费链
+
+`incident-review@1.0.0` 把动态发现的 `mcp__runtime__profile_text` 写入 Skill Allowlist 和五次 Tool Budget。事故描述编译和 Artifact Cache 检查后，Gateway 对该远端 Tool 作出 `external/medium → review` 决策；人工批准并原子消费一次性凭证后才执行 MCP 调用，随后四个只读本地 Tool 验证指标、确定性分级、生成行动项和结构化 Artifact。
+
+同步 API、异步 Worker Checkpoint 与 Agent MCP Server 都覆盖这条路径。MCP Server 的下游 Client 在 Server lifespan 中建立，避免在单个 MCP Tool 请求内创建长生命周期会话；集成测试验证 `MCP → Agent → MCP Provider` 的嵌套调用与审批恢复。
+
 ## 当前边界
 
 - Server Binding 由应用部署方在代码/配置层提供，不接受用户 Prompt 传入任意命令或 URL。
 - 当前只实现进程内和 stdio；远程 Streamable HTTP 留到有认证、TLS、SSRF 防护和 OAuth Scope 后再开放。
-- 默认远端 Tool 已进入统一 Registry，但尚未被现有黄金 Skills Allowlist；v1.0 的非金融 Skill 会以真实业务工作流使用它。
+- 只有部署方固定绑定的内置 Provider 可被发现；当前 `incident-review` 只使用结构统计 Tool，不接收用户指定的任意 MCP Server。

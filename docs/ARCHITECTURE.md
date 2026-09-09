@@ -8,7 +8,7 @@ AurumLab 的主语是 Agent 工程，不是黄金策略：
 
 这与 AgentForge 形成互补：AgentForge 重点展示 Agentic RAG 和知识库工作流；AurumLab 重点展示意图路由、Skill/MCP、工具治理、确定性任务执行、降级策略和自动评测。
 
-## v0.9 运行架构
+## v1.0b 运行架构
 
 ```text
 Web / HTTP / MCP ── sync ───────────────────────────────┐
@@ -25,6 +25,7 @@ Web / HTTP / MCP ── sync ─────────────────
         │     ├── backtest_strategy  → backtest-strategy
         │     ├── query_market_data  → query-market-data
         │     ├── external_research  → external-research
+        │     ├── incident_review    → incident-review
         │     └── other              → general-response
         ├── SkillRegistry: version + allowed_tools + max_tool_calls
         ├── BoundedPlanner: Skill Manifest → typed ExecutionPlan
@@ -43,7 +44,8 @@ Web / HTTP / MCP ── sync ─────────────────
                 ├── deterministic backtest tools
                 ├── read-only market query tools
                 ├── bounded SearchProvider
-                ├── governed MCP Tool adapter
+                ├── governed MCP Tool adapter → incident input profile
+                ├── deterministic incident review tools
                 └── direct-response tool
                           ↓
               RunResponse → SQLite RunRepository + ArtifactCache
@@ -79,7 +81,7 @@ v0.3.1 的 Router 返回强类型 `IntentDecision`：意图、Skill、置信度�
 
 MCP Client 通过进程内或 stdio transport 动态执行 `tools/list`，但发现成功不授予调用权。远端 Tool 先经过命名空间、Schema、大小、Prompt Injection 与指纹校验，再注册为本地 Adapter；只有 Skill Manifest 明确 Allowlist 后，才能通过原有 Tool Budget 和 Audit。首次发现自动 pin Schema，刷新发生漂移时保留 last-known-good Catalog 并降级 Server 健康状态。
 
-当前 Server Binding 由部署方提供，不允许用户 Prompt 指定命令或 URL；暂不开放远程 HTTP，避免在尚无认证、SSRF 防护与 OAuth Scope 时扩大攻击面。详细约束见 [`MCP_CLIENT.md`](MCP_CLIENT.md)。
+`incident-review@1.0.0` 是首个真实 Allowlist 动态 MCP Tool 的业务 Skill：输入轮廓调用先触发 `external/medium` 审批，批准后才进入远端 Adapter，随后由四个本地只读 Tool 生成结构化 Incident Artifact。当前 Server Binding 由部署方提供，不允许用户 Prompt 指定命令或 URL；暂不开放远程 HTTP，避免在尚无认证、SSRF 防护与 OAuth Scope 时扩大攻击面。详细约束见 [`MCP_CLIENT.md`](MCP_CLIENT.md) 与 [`INCIDENT_SKILL.md`](INCIDENT_SKILL.md)。
 
 ### 6. review 是执行状态，不是提示文本
 
@@ -116,7 +118,7 @@ Skill、注册 Tool、治理枚举、状态与耗时；Metric label 只用路由
 ## 评测架构
 
 ```text
-golden.v6.jsonl (108 cases) → dataset coverage contract
+golden.v7.jsonl (120 cases) → dataset coverage contract
         ↓
 EvalRunner → real AurumAgent → Run + Trace + Tool Audit
         ↓
@@ -134,7 +136,7 @@ EvalReportRepository → CLI exit code / API / Web panel
 
 ## 威胁模型
 
-| 边界 | 风险 | v0.9 控制 |
+| 边界 | 风险 | v1.0b 控制 |
 |---|---|---|
 | HTTP/MCP 输入 | 超长输入、Prompt Injection、破坏指令 | 长度校验；Tool 前威胁预检；fail closed |
 | 路由、Plan 与 Skill | 误路由、乱序或越权计划 | Pydantic 枚举；服务端 Skill 映射；Plan Validator/Runtime；Per-Skill Allowlist 与预算 |
@@ -147,6 +149,7 @@ EvalReportRepository → CLI exit code / API / Web panel
 | 行情 SQLite | SQL 注入、意外写入 | `mode=ro`；参数化值；标识符校验 |
 | 持久化 | Secret 泄露、缓存污染、陈旧结果 | 参数化 SQL；最小化 Artifact Snapshot；数据版本 + TTL；Run ID 校验 |
 | OpenTelemetry | Prompt/Token 泄露、高基数标签、伪造上下文 | 字段白名单；无 baggage；路由模板；有界 buffer；Metric 维度长度限制；OTLP operator config |
+| Incident Review | 凭证落库、无证据根因、自动执行处置 | 同步拒绝并脱敏；异步持久化前拒绝；`root_cause_status=unverified`；只读行动建议 |
 | Eval API | 计算资源滥用 | 固定本地数据集；最多 50 案例 |
 
 当前是本地单用户作品集，不宣称具备多租户生产安全。公网部署前需要身份认证、租户隔离、速率限制、CSRF 策略和 MCP OAuth/Scope。
@@ -218,19 +221,27 @@ EvalReportRepository → CLI exit code / API / Web panel
 - 请求/Run/Plan/Tool/Job/Checkpoint Counter 与 Histogram，低基数和隐私边界。
 - 有界本地 evidence、OTLP Collector、Jaeger Trace 和 Prometheus scrape endpoint。
 
-### v1.0-resume（招聘展示增强）
+### v1.0a（已完成：100+ Eval 与 CI）
 
-- Router 离线混淆矩阵与对抗集扩容。
-- 增加一个非金融工作流，证明架构可迁移，避免项目被理解为量化策略仓库。
+- Golden Set 扩展到 108 条，增加唯一性、路由/场景配额与标签一致性 Coverage Contract。
+- GitHub Actions 使用 Python 3.12 和 Redis Service 执行同一 `make verify` 门禁，官方 Action 以完整 SHA 固定。
+
+### v1.0b（已完成：非金融 Skill）
+
+- 新增 `incident-review@1.0.0` 与第五类路由，证明 Runtime 不依赖金融领域。
+- 自然语言编译为有界 `IncidentSpec`，确定性生成风险等级、证据和只读行动项，根因保持未验证。
+- 实际消费动态发现的 MCP Tool，并复用审批、预算、Audit、Artifact Memory、Checkpoint、SSE 与 Trace。
+- Golden Set v7 扩展到 120 条，其中 12 条事故复盘均执行真实 MCP 审批恢复。
 
 ## 面试演示主线
 
-1. 连续输入四类问题，展示路由解释和不同 Skill/Policy。
+1. 连续输入五类问题，展示路由解释和不同 Skill/Policy。
 2. 展示行情查询不触发回测、普通问题不触发外部服务。
 3. 输入 Prompt Injection，展示在零 Tool 调用时拒绝。
 4. 通过 MCP 调用同一请求，再用 Run Resource 读取结果。
 5. 查看 MCP Catalog，展示 stdio 动态发现、namespaced Tool、Schema 指纹和健康状态。
 6. 提交外部研究请求，展示 Plan 暂停、风险说明、人工批准、一次性消费和恢复轨迹。
-7. 运行 Golden Set v5，展示 16 条案例、Plan/Event/Approval 一致性和复用效率门禁。
-8. 连续提问等价策略，展示 miss 与 exact hit 的耗时、Tool 调用和来源 Run 差异。
-9. 将参数改为相近值，展示 semantic candidate 仍重新执行的正确性边界。
+7. 提交事故复盘，展示动态 MCP Tool、审批恢复、确定性分级和 `unverified` 根因边界。
+8. 运行 Golden Set v7，展示 120 条案例、Plan/Event/Approval 一致性和复用效率门禁。
+9. 连续提问等价策略，展示 miss 与 exact hit 的耗时、Tool 调用和来源 Run 差异。
+10. 将参数改为相近值，展示 semantic candidate 仍重新执行的正确性边界。

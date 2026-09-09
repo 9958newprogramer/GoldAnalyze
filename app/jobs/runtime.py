@@ -12,6 +12,7 @@ from opentelemetry.trace import SpanKind
 from app.agent.checkpoint import AgentExecutionCancelled, AgentStageTimeout
 from app.models import AgentCheckpoint, AgentJob, RunResponse
 from app.observability import Telemetry, TraceCarrier
+from app.security import contains_assigned_secret
 from app.storage import InvalidJobTransitionError, JobRepository
 
 from .broker import RedisStreamBroker, StreamMessage
@@ -40,6 +41,10 @@ class RetryableJobError(RuntimeError):
         self.code = code
 
 
+class SensitiveJobInputError(ValueError):
+    """Raised before persistence when an async payload appears to contain a credential."""
+
+
 @dataclass(frozen=True)
 class JobSubmissionService:
     jobs: JobRepository
@@ -54,6 +59,8 @@ class JobSubmissionService:
         *,
         idempotency_key: str | None,
     ) -> tuple[AgentJob, bool]:
+        if contains_assigned_secret(question):
+            raise SensitiveJobInputError("任务文本疑似包含凭据，请脱敏后重试")
         scope = (
             self.telemetry.span("aurumlab.job.submit", kind=SpanKind.PRODUCER)
             if self.telemetry is not None

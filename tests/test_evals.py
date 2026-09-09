@@ -14,9 +14,9 @@ async def test_golden_dataset_passes_and_is_persisted(tmp_path):
 
     assert report.passed is True
     assert report.score == 100
-    assert report.passed_cases == report.total_cases == 108
+    assert report.passed_cases == report.total_cases == 120
     assert report.coverage.adversarial_cases == 16
-    assert report.coverage.approval_cases == 12
+    assert report.coverage.approval_cases == 24
     assert report.coverage.cache_cases == 8
     assert services.eval_reports.latest() == report
 
@@ -46,12 +46,13 @@ def test_golden_dataset_meets_diversity_contract():
     cases = load_eval_cases(services.settings.resolved_eval_dataset_path)
     coverage = validate_dataset_coverage(cases)
 
-    assert len(cases) == 108
+    assert len(cases) == 120
     assert len({case.case_id for case in cases}) == len(cases)
-    assert coverage.unique_questions == 108
+    assert coverage.unique_questions == 120
     assert coverage.intent_counts == {
         "backtest_strategy": 44,
         "external_research": 12,
+        "incident_review": 12,
         "other": 28,
         "query_market_data": 24,
     }

@@ -72,6 +72,10 @@ async def test_rule_router_is_used_when_llm_is_not_configured():
         ("评估黄金日线14日和56日均线交叉。", "backtest_strategy"),
         ("查询2022年至2025年黄金日K数据。", "query_market_data"),
         ("查詢外部資料：美元指數為什麼影響黃金？", "external_research"),
+        (
+            "复盘 checkout-api 服务事故：错误率12%，P95延迟1800ms，持续35分钟。",
+            "incident_review",
+        ),
     ],
 )
 @pytest.mark.asyncio

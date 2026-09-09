@@ -9,6 +9,7 @@ from openai import AsyncOpenAI
 
 from app.config import Settings
 from app.models import IntentClassification, IntentDecision, ThreatSignal
+from app.security import contains_assigned_secret
 
 _THREAT_PATTERNS = [
     (
@@ -39,6 +40,7 @@ _SKILL_BY_INTENT = {
     "backtest_strategy": "backtest-strategy",
     "query_market_data": "query-market-data",
     "external_research": "external-research",
+    "incident_review": "incident-review",
     "other": "general-response",
 }
 
@@ -85,6 +87,7 @@ class OpenAIIntentClassifier:
                         "backtest_strategy（评估或执行策略，包括描述交易规则但没写回测）、"
                         "query_market_data（查询本地K线、价格或成交量，不评估策略）、"
                         "external_research（需要联网、新闻、宏观背景或外部时效知识）、"
+                        "incident_review（根据错误率、延迟、持续时间等事实复盘服务事故）、"
                         "other（寒暄、能力询问或意图不足）。"
                         "若必须追问才能安全选择任务，intent 设为 other 且"
                         "needs_clarification=true。reason 用一句中文说明，confidence 为0到1。"
@@ -108,6 +111,7 @@ class RuleBasedIntentRouter:
             "backtest_strategy": 0.05,
             "query_market_data": 0.05,
             "external_research": 0.05,
+            "incident_review": 0.05,
             "other": 0.15,
         }
         if _contains(question, r"回[测測]|策略|最大回撤|夏普|收益率|胜率"):
@@ -136,6 +140,10 @@ class RuleBasedIntentRouter:
             r"为什么|為什麼|原因|影响|宏观|宏觀|美联储|利率|地缘|地緣|政策",
         ):
             scores["external_research"] += 0.25
+        if _contains(question, r"事故|故障|复盘|復盤|事后检讨|事後檢討"):
+            scores["incident_review"] += 0.65
+        if _contains(question, r"错误率|P95|延迟|延遲|持续.{0,8}(?:分钟|小时)|影响.{0,10}请求"):
+            scores["incident_review"] += 0.25
 
         scores = {name: min(value, 1.0) for name, value in scores.items()}
         selected = max(scores, key=scores.get)  # type: ignore[arg-type]
@@ -146,6 +154,7 @@ class RuleBasedIntentRouter:
             "backtest_strategy": "规则降级识别到策略参数或回测指标。",
             "query_market_data": "规则降级识别到本地行情或 K 线查询。",
             "external_research": "规则降级识别到外部时效信息或背景研究。",
+            "incident_review": "规则降级识别到服务事故事实与复盘指标。",
             "other": "规则降级未发现需要领域 Tool 的明确任务。",
         }
         return IntentDecision(
@@ -177,11 +186,20 @@ class IntentRouter:
 
     @staticmethod
     def _threat_signals(question: str) -> list[ThreatSignal]:
-        return [
+        signals = [
             ThreatSignal(category=category, confidence=confidence, evidence=match.group(0)[:80])
             for pattern, category, confidence in _THREAT_PATTERNS
             if (match := pattern.search(question))
         ]
+        if contains_assigned_secret(question):
+            signals.append(
+                ThreatSignal(
+                    category="sensitive_input",
+                    confidence=0.99,
+                    evidence="credential_assignment=[REDACTED]",
+                )
+            )
+        return signals
 
     async def route(self, question: str) -> IntentDecision:
         signals = self._threat_signals(question)

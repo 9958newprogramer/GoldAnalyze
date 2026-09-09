@@ -13,7 +13,7 @@ def test_health_and_home_are_available():
 
     assert health.status_code == 200
     assert health.json()["status"] == "ok"
-    assert health.json()["skills_count"] == 4
+    assert health.json()["skills_count"] == 5
     assert health.json()["router"].startswith("governed-llm-router")
     assert health.json()["planner"].startswith("deterministic-skill-planner")
     assert health.json()["router_mode"] == "rule-fallback"
@@ -119,13 +119,13 @@ def test_eval_api_runs_versioned_quality_gate():
     response = client.post("/api/evals/run")
 
     assert cases.status_code == 200
-    assert len(cases.json()) == 108
+    assert len(cases.json()) == 120
     assert response.status_code == 200
     payload = response.json()
-    assert payload["dataset_version"] == "v6"
+    assert payload["dataset_version"] == "v7"
     assert payload["passed"] is True
     assert payload["score"] == 100
-    assert payload["passed_cases"] == payload["total_cases"] == 108
+    assert payload["passed_cases"] == payload["total_cases"] == 120
     assert payload["coverage"]["adversarial_cases"] == 16
 
 

@@ -197,6 +197,71 @@ class ExternalResearchResult(BaseModel):
     freshness: str
 
 
+class IncidentSpec(BaseModel):
+    """Bounded facts compiled from an incident-review request."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    service: str = Field(default="unknown-service", pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+    error_rate_pct: float | None = Field(default=None, ge=0, le=100)
+    p95_latency_ms: float | None = Field(default=None, ge=0, le=120_000)
+    duration_minutes: int | None = Field(default=None, ge=1, le=10_080)
+    affected_requests: int | None = Field(default=None, ge=0, le=1_000_000_000)
+
+    @model_validator(mode="after")
+    def require_measurable_evidence(self) -> IncidentSpec:
+        signals = (
+            self.error_rate_pct,
+            self.p95_latency_ms,
+            self.duration_minutes,
+            self.affected_requests,
+        )
+        if all(value is None for value in signals):
+            raise ValueError("事故复盘至少需要一项可量化证据")
+        return self
+
+
+class IncidentAssessment(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    severity: Literal["SEV-1", "SEV-2", "SEV-3", "SEV-4"]
+    risk_score: int = Field(ge=0, le=100)
+    root_cause_status: Literal["unverified"] = "unverified"
+    findings: list[str] = Field(min_length=1, max_length=8)
+
+
+class IncidentInputProfile(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    characters: int = Field(ge=0, le=2_000)
+    words: int = Field(ge=0, le=1_000)
+    lines: int = Field(ge=1, le=1_000)
+    contains_code_fence: bool
+
+
+class IncidentActionItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    action_id: str = Field(pattern=r"^ACT-[1-9][0-9]?$", max_length=6)
+    priority: Literal["P0", "P1", "P2"]
+    owner_role: Literal["on-call", "service-owner", "platform"]
+    category: Literal["mitigate", "observe", "prevent"]
+    action: str = Field(min_length=4, max_length=200)
+
+
+class IncidentReviewResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    service: str
+    severity: Literal["SEV-1", "SEV-2", "SEV-3", "SEV-4"]
+    risk_score: int = Field(ge=0, le=100)
+    root_cause_status: Literal["unverified"] = "unverified"
+    input_profile: IncidentInputProfile
+    findings: list[str] = Field(min_length=1, max_length=8)
+    action_items: list[IncidentActionItem] = Field(min_length=1, max_length=8)
+    summary: str = Field(min_length=10, max_length=1_000)
+
+
 class BacktestMetrics(BaseModel):
     total_return_pct: float
     max_drawdown_pct: float
@@ -319,18 +384,31 @@ class IntentClassification(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    intent: Literal["backtest_strategy", "query_market_data", "external_research", "other"]
+    intent: Literal[
+        "backtest_strategy",
+        "query_market_data",
+        "external_research",
+        "incident_review",
+        "other",
+    ]
     reason: str = Field(min_length=1, max_length=300)
     confidence: float = Field(ge=0, le=1)
     needs_clarification: bool = False
 
 
 class IntentDecision(BaseModel):
-    intent: Literal["backtest_strategy", "query_market_data", "external_research", "other"]
+    intent: Literal[
+        "backtest_strategy",
+        "query_market_data",
+        "external_research",
+        "incident_review",
+        "other",
+    ]
     skill: Literal[
         "backtest-strategy",
         "query-market-data",
         "external-research",
+        "incident-review",
         "general-response",
     ]
     action: Literal["allow", "deny"] = "allow"
@@ -377,6 +455,8 @@ class ArtifactSnapshot(BaseModel):
     market_result: MarketQueryResult | None = None
     research_spec: ExternalResearchSpec | None = None
     research_result: ExternalResearchResult | None = None
+    incident_spec: IncidentSpec | None = None
+    incident_result: IncidentReviewResult | None = None
     data_profile: DataProfile | None = None
     metrics: BacktestMetrics | None = None
     trades: list[Trade] = Field(default_factory=list)
@@ -396,6 +476,8 @@ class ArtifactSnapshot(BaseModel):
             market_result=run.market_result,
             research_spec=run.research_spec,
             research_result=run.research_result,
+            incident_spec=run.incident_spec,
+            incident_result=run.incident_result,
             data_profile=run.data_profile,
             metrics=run.metrics,
             trades=run.trades,
@@ -426,6 +508,8 @@ class RunResponse(BaseModel):
     market_result: MarketQueryResult | None = None
     research_spec: ExternalResearchSpec | None = None
     research_result: ExternalResearchResult | None = None
+    incident_spec: IncidentSpec | None = None
+    incident_result: IncidentReviewResult | None = None
     data_profile: DataProfile | None = None
     metrics: BacktestMetrics | None = None
     trades: list[Trade] = Field(default_factory=list)

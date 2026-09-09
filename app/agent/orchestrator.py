@@ -19,6 +19,14 @@ from app.agent.checkpoint import (
     CancelProbe,
     CheckpointSink,
 )
+from app.agent.incident import (
+    INCIDENT_SCHEMA_VERSION,
+    assess_incident_impact,
+    build_incident_action_plan,
+    compile_incident_spec,
+    summarize_incident_review,
+    validate_incident_spec,
+)
 from app.agent.interpreter import OpenAICompatibleStrategyInterpreter
 from app.agent.planner import BoundedPlanner, PlanRuntime
 from app.agent.router import IntentRouter
@@ -32,6 +40,7 @@ from app.approval import (
 )
 from app.domain.backtest import BacktestResult, run_sma_crossover
 from app.domain.market_data import Bar, MarketDataRepository, profile_bars
+from app.mcp_client import MCPClientManager
 from app.memory import ArtifactCache, CacheLookup, TaskFingerprint, build_task_fingerprint
 from app.models import (
     AgentCheckpoint,
@@ -43,6 +52,11 @@ from app.models import (
     ExecutionPlan,
     ExternalResearchResult,
     ExternalResearchSpec,
+    IncidentActionItem,
+    IncidentAssessment,
+    IncidentInputProfile,
+    IncidentReviewResult,
+    IncidentSpec,
     IntentDecision,
     MarketBarView,
     MarketQueryResult,
@@ -52,6 +66,7 @@ from app.models import (
     StrategySpec,
 )
 from app.observability import Telemetry
+from app.security import redact_sensitive_text
 from app.skills.registry import SkillRegistry
 from app.storage import RunRepository
 from app.tools.registry import ToolGateway, ToolMetadata, ToolPolicy, ToolRegistry
@@ -84,6 +99,7 @@ class AurumAgent:
         market_cache_ttl_seconds: int = 300,
         research_cache_ttl_seconds: int = 900,
         telemetry: Telemetry | None = None,
+        mcp_clients: MCPClientManager | None = None,
     ):
         self.interpreter = interpreter
         self.market_repository = market_repository
@@ -97,6 +113,7 @@ class AurumAgent:
         self.market_cache_ttl_seconds = market_cache_ttl_seconds
         self.research_cache_ttl_seconds = research_cache_ttl_seconds
         self.telemetry = telemetry
+        self.mcp_clients = mcp_clients
         self.tools = ToolRegistry()
         read_low = ToolMetadata(effect="read", risk="low")
         self.tools.register("inspect_market_data", self._inspect_market_data, read_low)
@@ -117,6 +134,12 @@ class AurumAgent:
         self.tools.register(
             "summarize_external_research", self._summarize_external_research, read_low
         )
+        self.tools.register("validate_incident_spec", self._validate_incident_spec, read_low)
+        self.tools.register("assess_incident_impact", self._assess_incident_impact, read_low)
+        self.tools.register(
+            "build_incident_action_plan", self._build_incident_action_plan, read_low
+        )
+        self.tools.register("summarize_incident_review", self._summarize_incident_review, read_low)
         self.tools.register("compose_general_response", self._compose_general_response, read_low)
 
     async def _inspect_market_data(self, spec: StrategySpec) -> dict[str, Any]:
@@ -221,9 +244,42 @@ class AurumAgent:
 
     async def _compose_general_response(self, question: str) -> str:
         return (
-            "当前 Agent 支持三类可执行任务：策略回测、本地黄金行情查询和外部知识检索。"
+            "当前 Agent 支持四类可执行任务：策略回测、本地黄金行情查询、"
+            "外部知识检索和服务事故复盘。"
             "这个问题未触发领域工具；你可以直接描述目标、周期和参数。"
         )
+
+    async def _validate_incident_spec(self, spec: IncidentSpec) -> list[str]:
+        return validate_incident_spec(spec)
+
+    async def _assess_incident_impact(self, spec: IncidentSpec) -> IncidentAssessment:
+        return assess_incident_impact(spec)
+
+    async def _build_incident_action_plan(
+        self, assessment: IncidentAssessment
+    ) -> list[IncidentActionItem]:
+        return build_incident_action_plan(assessment)
+
+    async def _summarize_incident_review(
+        self,
+        spec: IncidentSpec,
+        assessment: IncidentAssessment,
+        input_profile: IncidentInputProfile,
+        action_items: list[IncidentActionItem],
+    ) -> IncidentReviewResult:
+        return summarize_incident_review(spec, assessment, input_profile, action_items)
+
+    async def _ensure_skill_tools(self, skill) -> None:
+        remote_tools = [name for name in skill.allowed_tools if name.startswith("mcp__")]
+        if not remote_tools:
+            return
+        if self.mcp_clients is None:
+            raise RuntimeError("Skill 依赖 MCP Tool，但运行时未配置 MCP Client")
+        await self.mcp_clients.start()
+        self.mcp_clients.register_tools(self.tools)
+        missing = [name for name in remote_tools if not self.tools.contains(name)]
+        if missing:
+            raise RuntimeError("Skill 依赖的 MCP Tool 未通过动态发现与 Schema 门禁")
 
     async def _timed_event(
         self,
@@ -545,6 +601,8 @@ class AurumAgent:
             "market_result": source.market_result,
             "research_spec": source.research_spec,
             "research_result": source.research_result,
+            "incident_spec": source.incident_spec,
+            "incident_result": source.incident_result,
             "data_profile": source.data_profile,
             "metrics": source.metrics,
             "trades": source.trades,
@@ -809,6 +867,95 @@ class AurumAgent:
             "cache": CacheInfo(status="bypass", reason="general_response_is_not_cached"),
         }
 
+    async def _run_incident_review_workflow(
+        self,
+        question: str,
+        events: list[AgentEvent],
+        runtime: PlanRuntime,
+        gateway: ToolGateway,
+        cache_policy: Literal["use", "refresh", "bypass"],
+        session: AgentExecutionSession | None = None,
+    ) -> dict[str, Any]:
+        spec = self._timed_sync_event(
+            events,
+            runtime,
+            "compile_incident_spec",
+            "已将事故描述编译为受约束的 IncidentSpec",
+            lambda: compile_incident_spec(question),
+            session=session,
+        )
+        task = build_task_fingerprint("incident_review", spec, INCIDENT_SCHEMA_VERSION)
+        lookup = self._lookup_cache(events, runtime, task, cache_policy, session)
+        if lookup.info.status == "exact_hit" and lookup.source is not None:
+            return self._cached_payload(lookup.source, lookup.info)
+        profile_payload = await self._timed_event(
+            events,
+            runtime,
+            "mcp__runtime__profile_text",
+            "已通过动态发现的 MCP Tool 生成有界输入轮廓",
+            lambda: gateway.call(
+                "mcp__runtime__profile_text",
+                step_id="mcp__runtime__profile_text",
+                text=question,
+            ),
+            tool_name="mcp__runtime__profile_text",
+            session=session,
+        )
+        input_profile = IncidentInputProfile.model_validate(profile_payload)
+        validation_warnings = await self._timed_event(
+            events,
+            runtime,
+            "validate_incident_spec",
+            "已验证事故指标边界与证据完整性",
+            lambda: gateway.call("validate_incident_spec", spec=spec),
+            tool_name="validate_incident_spec",
+            session=session,
+        )
+        assessment = await self._timed_event(
+            events,
+            runtime,
+            "assess_incident_impact",
+            "已基于结构化事实生成确定性风险分级",
+            lambda: gateway.call("assess_incident_impact", spec=spec),
+            tool_name="assess_incident_impact",
+            session=session,
+        )
+        action_items = await self._timed_event(
+            events,
+            runtime,
+            "build_incident_action_plan",
+            "已生成只读的分级行动项",
+            lambda: gateway.call("build_incident_action_plan", assessment=assessment),
+            tool_name="build_incident_action_plan",
+            session=session,
+        )
+        result = await self._timed_event(
+            events,
+            runtime,
+            "summarize_incident_review",
+            "已生成不虚构根因的 Incident Artifact",
+            lambda: gateway.call(
+                "summarize_incident_review",
+                spec=spec,
+                assessment=assessment,
+                input_profile=input_profile,
+                action_items=action_items,
+            ),
+            tool_name="summarize_incident_review",
+            session=session,
+        )
+        return {
+            "interpreter": "deterministic-incident-compiler",
+            "incident_spec": spec,
+            "incident_result": result,
+            "summary": result.summary,
+            "warnings": validation_warnings,
+            "cache_status": lookup.info.status,
+            "cache": lookup.info,
+            "_cache_task": task,
+            "_cache_ttl": None,
+        }
+
     async def run(
         self,
         question: str,
@@ -871,6 +1018,7 @@ class AurumAgent:
     async def _observed_execute(self, question: str, **kwargs: Any) -> RunResponse:
         started = perf_counter()
         job_id = kwargs.get("checkpoint_job_id")
+        owns_mcp_session = self.mcp_clients is not None and not self.mcp_clients.started
         scope = (
             self.telemetry.span(
                 "aurumlab.agent.run",
@@ -882,36 +1030,41 @@ class AurumAgent:
             if self.telemetry is not None
             else nullcontext()
         )
-        with scope as span:
-            try:
-                response = await self._execute(question, **kwargs)
-            except Exception as exc:
+        try:
+            with scope as span:
+                try:
+                    response = await self._execute(question, **kwargs)
+                except Exception as exc:
+                    if span is not None:
+                        self.telemetry.mark_error(span, type(exc).__name__)
+                    if self.telemetry is not None:
+                        self.telemetry.count(
+                            "aurumlab.agent.runs",
+                            attributes={"intent": "unknown", "status": "error"},
+                        )
+                    raise
+                duration_ms = round((perf_counter() - started) * 1_000, 2)
                 if span is not None:
-                    self.telemetry.mark_error(span, type(exc).__name__)
-                if self.telemetry is not None:
-                    self.telemetry.count(
-                        "aurumlab.agent.runs", attributes={"intent": "unknown", "status": "error"}
+                    span.set_attribute("aurumlab.run.id", response.run_id)
+                    span.set_attribute(
+                        "aurumlab.intent", response.route.intent if response.route else "unknown"
                     )
-                raise
-            duration_ms = round((perf_counter() - started) * 1_000, 2)
-            if span is not None:
-                span.set_attribute("aurumlab.run.id", response.run_id)
-                span.set_attribute(
-                    "aurumlab.intent", response.route.intent if response.route else "unknown"
-                )
-                span.set_attribute("aurumlab.skill", response.skill)
-                span.set_attribute("aurumlab.cache.status", response.cache_status)
-            if self.telemetry is not None:
-                attributes = {
-                    "intent": response.route.intent if response.route else "unknown",
-                    "status": response.status,
-                    "cache_status": response.cache_status,
-                }
-                self.telemetry.count("aurumlab.agent.runs", attributes=attributes)
-                self.telemetry.record(
-                    "aurumlab.agent.run.duration", duration_ms, attributes=attributes
-                )
-            return response
+                    span.set_attribute("aurumlab.skill", response.skill)
+                    span.set_attribute("aurumlab.cache.status", response.cache_status)
+                if self.telemetry is not None:
+                    attributes = {
+                        "intent": response.route.intent if response.route else "unknown",
+                        "status": response.status,
+                        "cache_status": response.cache_status,
+                    }
+                    self.telemetry.count("aurumlab.agent.runs", attributes=attributes)
+                    self.telemetry.record(
+                        "aurumlab.agent.run.duration", duration_ms, attributes=attributes
+                    )
+                return response
+        finally:
+            if owns_mcp_session and self.mcp_clients is not None and self.mcp_clients.started:
+                await self.mcp_clients.stop()
 
     def deny_approval(self, run_id: str, approval_id: str) -> RunResponse:
         pending = self.runs.get(run_id)
@@ -976,6 +1129,7 @@ class AurumAgent:
         stage_timeout_seconds: float = 30.0,
         trusted_consumed_approval: ApprovalRequest | None = None,
     ) -> RunResponse:
+        stored_question = redact_sensitive_text(question)
         if checkpoint is not None:
             run_id = checkpoint.run_id
             created_at = checkpoint.created_at
@@ -1037,7 +1191,7 @@ class AurumAgent:
                 status="rejected",
                 skill=f"{route.skill}@0.1.0",
                 interpreter=route.router,
-                question=question,
+                question=stored_question,
                 route=route,
                 execution_mode="rejected",
                 requested_cache_policy=cache_policy,
@@ -1052,6 +1206,34 @@ class AurumAgent:
             return response
 
         skill = self.skills.get(route.skill)
+        try:
+            await self._ensure_skill_tools(skill)
+        except Exception as exc:  # noqa: BLE001 -- dependency discovery must fail closed
+            events.append(
+                AgentEvent(
+                    sequence=len(events) + 1,
+                    stage="select_skill",
+                    status="failed",
+                    message="Skill 依赖的 MCP Tool 未通过动态发现与兼容性门禁",
+                    duration_ms=0,
+                    details={"error_type": type(exc).__name__},
+                )
+            )
+            response = RunResponse(
+                run_id=run_id,
+                status="failed",
+                skill=f"{skill.name}@{skill.version}",
+                interpreter="mcp-discovery-failed",
+                question=stored_question,
+                route=route,
+                requested_cache_policy=cache_policy,
+                summary="Agent 已安全停止：Skill 依赖的 MCP Tool 不可用。",
+                warnings=["未执行任何领域 Tool，也未降级绕过 MCP Schema 门禁。"],
+                events=events,
+                created_at=created_at,
+            )
+            self._save_run(response)
+            return response
         policy = ToolPolicy(
             policy_name=f"{skill.name}@{skill.version}",
             allowed_tools=set(skill.allowed_tools),
@@ -1202,6 +1384,7 @@ class AurumAgent:
                 "backtest_strategy": self._run_backtest_workflow,
                 "query_market_data": self._run_market_query_workflow,
                 "external_research": self._run_external_research_workflow,
+                "incident_review": self._run_incident_review_workflow,
                 "other": self._run_general_workflow,
             }
             payload = await workflows[route.intent](
@@ -1215,7 +1398,7 @@ class AurumAgent:
                 run_id=run_id,
                 status="completed",
                 skill=f"{skill.name}@{skill.version}",
-                question=question,
+                question=stored_question,
                 route=route,
                 plan=plan,
                 execution_mode=(
@@ -1240,7 +1423,7 @@ class AurumAgent:
                 status="pending_approval",
                 skill=f"{skill.name}@{skill.version}",
                 interpreter="pending-approval",
-                question=question,
+                question=stored_question,
                 route=route,
                 plan=plan,
                 execution_mode="approval",
@@ -1276,7 +1459,7 @@ class AurumAgent:
                 status="failed",
                 skill=f"{skill.name}@{skill.version}",
                 interpreter="failed-before-artifact",
-                question=question,
+                question=stored_question,
                 route=route,
                 plan=plan,
                 requested_cache_policy=cache_policy,

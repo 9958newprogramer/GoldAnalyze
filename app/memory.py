@@ -15,7 +15,12 @@ from pydantic import BaseModel
 
 from app.models import ArtifactSnapshot, CacheInfo, CacheStats, RunResponse
 
-CacheableIntent = Literal["backtest_strategy", "query_market_data", "external_research"]
+CacheableIntent = Literal[
+    "backtest_strategy",
+    "query_market_data",
+    "external_research",
+    "incident_review",
+]
 CACHE_SCHEMA_VERSION = "artifact-cache-v2"
 
 
@@ -65,6 +70,12 @@ def build_task_fingerprint(
             "query": _normalized_query(str(normalized.get("query", ""))),
         }
         semantic_bucket: dict[str, Any] = {"schema": CACHE_SCHEMA_VERSION, "intent": intent}
+    elif intent == "incident_review":
+        semantic_bucket = {
+            "schema": CACHE_SCHEMA_VERSION,
+            "intent": intent,
+            "service": normalized.get("service"),
+        }
     else:
         semantic_bucket = {
             "schema": CACHE_SCHEMA_VERSION,
@@ -122,6 +133,11 @@ def task_similarity(intent: CacheableIntent, left: dict[str, Any], right: dict[s
             1.0 if left.get("start_date") == right.get("start_date") else 0.0,
             1.0 if left.get("end_date") == right.get("end_date") else 0.0,
         ]
+        return round(sum(scores) / len(scores), 4)
+    if intent == "incident_review":
+        numeric = ["error_rate_pct", "p95_latency_ms", "duration_minutes", "affected_requests"]
+        scores = [_number_similarity(left.get(field), right.get(field)) for field in numeric]
+        scores.append(1.0 if left.get("service") == right.get("service") else 0.0)
         return round(sum(scores) / len(scores), 4)
     return round(_token_similarity(str(left.get("query", "")), str(right.get("query", ""))), 4)
 

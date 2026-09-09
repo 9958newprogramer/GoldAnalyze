@@ -4,7 +4,7 @@ AurumLab 是一个**面向 Agent 开发求职**的可运行作品集项目。黄
 
 > 只做研究与历史实验，不连接实盘，不执行用户提供的 Python、SQL 或 Shell，不构成投资建议。
 
-## v0.9 已实现的闭环
+## v1.0b 已实现的闭环
 
 ```mermaid
 flowchart LR
@@ -30,7 +30,7 @@ flowchart LR
     H -->|deny / expire| R
     H -->|one-time grant| O[原子消费凭证]
     O --> F
-    G -->|allow| F[策略回测 / 行情查询 / 外部研究 / 直接回答]
+    G -->|allow| F[回测 / 行情 / 研究 / 事故复盘 / 直接回答]
     F --> J[结构化结果 + Trace + Audit]
     X & J --> K[SQLite 持久化 + Provenance]
     A --> U[Async Job API]
@@ -51,6 +51,7 @@ flowchart LR
 | `backtest_strategy` | `backtest-strategy` | StrategySpec、Metrics、EquityCurve | 4 |
 | `query_market_data` | `query-market-data` | MarketQuerySpec、K 线快照、区间统计 | 2 |
 | `external_research` | `external-research` | ExternalResearchSpec、带 URL 的 Sources | 2 |
+| `incident_review` | `incident-review` | IncidentSpec、风险分级、只读行动项 | 5 |
 | `other` | `general-response` | 能力边界内的直接回答 | 1 |
 
 危险指令会在 LLM、Skill 和 Tool 执行前拒绝，并记录 `route_intent → policy_reject`。允许执行的任务为每次 Tool 授权与执行生成审计记录，但不记录 API Key、审批凭证或完整 Tool 参数。模型只能返回类型化意图，`intent → skill` 映射由服务端代码控制。
@@ -67,7 +68,9 @@ API、MCP 和 Web UI 均返回同一个 Plan，包括已完成、跳过和失败
 
 所有 JSON Schema 使用 Draft 2020-12 校验并生成 16 位稳定指纹。首次发现后自动 pin；同名 Tool 的 Schema 漂移、命名冲突、外部 `$ref`、未知参数、超时、过大输入输出以及 Tool 描述/结果中的 Prompt Injection 都会 fail closed。刷新失败时保留 last-known-good Catalog，并把 Server 标记为 `degraded`；连接失败只隔离对应 Server，不阻断主 Agent。
 
-`GET /api/mcp/catalog` 可查看 Server 健康、协议/实现版本、命名空间、Tool Schema 和指纹。默认 Provider 只提供运行时能力描述与文本结构统计，用来证明 MCP 和治理架构可迁移到非金融场景，不参与黄金计算。
+`GET /api/mcp/catalog` 可查看 Server 健康、协议/实现版本、命名空间、Tool Schema 和指纹。`incident-review@1.0.0` 会实际调用动态发现的 `mcp__runtime__profile_text`，经人工审批后生成事故输入轮廓，再由确定性 Tool 产出结构化复盘；这条链与黄金计算无关，用来证明 Runtime 可迁移。
+
+事故复盘输入会被编译为有范围约束的 `IncidentSpec`，风险分级只基于错误率、P95 延迟、持续时间和影响请求数，不从描述中臆测根因。输出明确标记 `root_cause_status=unverified`，行动项仅为结构化建议，不执行变更、通知或任意外部命令。明显的凭证赋值会在 Tool 前拒绝；异步提交还会在持久化前返回 422。详见 [`docs/INCIDENT_SKILL.md`](docs/INCIDENT_SKILL.md)。
 
 ## Tool Governance 与人工审批
 
@@ -112,6 +115,7 @@ python3.12 -m venv .venv
 使用黄金日K，20日均线上穿60日均线做多，2019年至2025年回测。
 给我黄金最近12根1小时K线。
 搜索互联网最新黄金新闻。
+复盘 checkout-api 服务事故：错误率12%，P95延迟1800ms，持续35分钟，影响2400个请求。
 你好，你能做什么？
 ```
 
@@ -208,7 +212,7 @@ make demo-memory
 
 ## LLM 意图路由
 
-LLM 只负责将请求分类为四种枚举意图，不直接选择 Tool。Pydantic 校验模型 JSON，服务端代码绑定 Skill；模型超时、调用失败或输出非法时才启用规则 fallback。
+LLM 只负责将请求分类为五种枚举意图，不直接选择 Tool。Pydantic 校验模型 JSON，服务端代码绑定 Skill；模型超时、调用失败或输出非法时才启用规则 fallback。
 
 ```dotenv
 ROUTER_LLM_API_KEY=your-key
@@ -239,9 +243,9 @@ Provider 使用 HTTPS、8 秒超时、禁止自动重定向、最多 10 个结�
 
 ## Agent Eval 质量门禁
 
-[`evals/golden.v6.jsonl`](evals/golden.v6.jsonl) 包含 108 个真实 Agent 案例：44 个策略任务、24 个行情查询、12 个外部研究和 28 个其他意图；其中包含 16 个对抗拒绝、12 个人工审批、8 个精确缓存复用案例。每条都执行真实 Router→Skill→Plan→Tool→Artifact 链路，并校验 Plan/Event 轨迹与 `review → consume → execute` 审计链一致。
+[`evals/golden.v7.jsonl`](evals/golden.v7.jsonl) 包含 120 个真实 Agent 案例：44 个策略任务、24 个行情查询、12 个外部研究、12 个非金融事故复盘和 28 个其他意图；其中包含 16 个对抗拒绝、24 个人工审批、8 个精确缓存复用案例。每条都执行真实 Router→Skill→Plan→Tool→Artifact 链路，并校验 Plan/Event 轨迹与 `review → consume → execute` 审计链一致。
 
-评测前还会执行数据集级覆盖契约：至少 100 条、问题与 ID 唯一、四类路由配额、日线/小时线配额，以及审批、对抗、缓存、边界和繁体输入的最低覆盖。小样本、重复问题或错误标签会在执行前直接失败，避免用同义句灌水。
+评测前还会执行数据集级覆盖契约：至少 100 条、问题与 ID 唯一、五类路由配额、日线/小时线配额，以及审批、对抗、缓存、边界和繁体输入的最低覆盖。小样本、重复问题或错误标签会在执行前直接失败，避免用同义句灌水。
 
 | 维度 | 权重 | 检查内容 |
 |---|---:|---|
@@ -258,18 +262,19 @@ Provider 使用 HTTPS、8 秒超时、禁止自动重定向、最多 10 个结�
 
 存在任一失败维度时案例失败；总分不达阈值或存在失败案例时 CLI 返回非零退出码，可直接接入 CI。Web UI、API 和 CLI 使用同一个真实 Agent，而不是评测替身。
 
-GitHub Actions 在 Python 3.12 与真实 Redis Service 上执行 `make verify`，同一门禁包含 Ruff、全量 Pytest、Redis Consumer Group 集成测试与 108 条 Eval。Action 依赖使用完整 commit SHA 锁定，并将仓库权限限制为只读。详见 [`docs/EVALS.md`](docs/EVALS.md)。
+GitHub Actions 在 Python 3.12 与真实 Redis Service 上执行 `make verify`，同一门禁包含 Ruff、全量 Pytest、Redis Consumer Group 集成测试与 120 条 Eval。Action 依赖使用完整 commit SHA 锁定，并将仓库权限限制为只读。详见 [`docs/EVALS.md`](docs/EVALS.md)。
 
 ## MCP Client / Server
 
 MCP 与 HTTP API 复用同一个 Agent、Skill Registry 和 Run Store：
 
-- Tool：`handle_agent_request`（四类意图的统一入口）
+- Tool：`handle_agent_request`（五类意图的统一入口）
 - Tool：`analyze_gold_strategy`（向后兼容别名）
 - Tool：`resume_agent_run`（使用由 HTTP 控制面签发的一次性审批凭证恢复 Run）
 - Tool：`list_aurumlab_skills`
 - Resource：`aurum://skills`
 - Resource：`aurum://skills/backtest-strategy`
+- Resource：`aurum://skills/incident-review`
 - Resource：`aurum://evals/latest`
 - Resource：`aurum://cache/stats`
 - Resource Template：`aurum://runs/{run_id}`
@@ -334,12 +339,12 @@ app/
   static/         # 多意图反馈 UI
   main.py         # FastAPI
   mcp_server.py   # Agent MCP Tools / Resources
-skills/           # 4 个版本化 Skill 包
-evals/            # v1—v6 版本化评测集（v6: 108 cases）
+skills/           # 5 个版本化 Skill 包
+evals/            # v1—v7 版本化评测集（v7: 120 cases）
 tests/
 docs/
 ```
 
-v0.9 已实现 OpenTelemetry Trace/Metrics 与 W3C 异步上下文传播；v0.8 的 Redis Streams Worker、SSE、恢复语义和 HITL 继续作为执行底座。详见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)、[`docs/OBSERVABILITY.md`](docs/OBSERVABILITY.md)、[`docs/ASYNC_RUNTIME.md`](docs/ASYNC_RUNTIME.md)、[`docs/APPROVALS.md`](docs/APPROVALS.md)、[`docs/MCP_CLIENT.md`](docs/MCP_CLIENT.md)、[`docs/ARTIFACT_MEMORY.md`](docs/ARTIFACT_MEMORY.md) 与 [`docs/RESUME.md`](docs/RESUME.md)。
+v1.0b 在 v0.9 可观测与 v0.8 异步执行底座上，补齐了真正消费动态 MCP Tool 的非金融 Skill 和 120 条 v7 评测。详见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)、[`docs/OBSERVABILITY.md`](docs/OBSERVABILITY.md)、[`docs/ASYNC_RUNTIME.md`](docs/ASYNC_RUNTIME.md)、[`docs/APPROVALS.md`](docs/APPROVALS.md)、[`docs/MCP_CLIENT.md`](docs/MCP_CLIENT.md)、[`docs/INCIDENT_SKILL.md`](docs/INCIDENT_SKILL.md)、[`docs/ARTIFACT_MEMORY.md`](docs/ARTIFACT_MEMORY.md) 与 [`docs/RESUME.md`](docs/RESUME.md)。
 
 持续迭代的当前状态、验收证据、下一步和掉线恢复方式，以 [`docs/PROGRESS.md`](docs/PROGRESS.md) 为唯一进度真相源。

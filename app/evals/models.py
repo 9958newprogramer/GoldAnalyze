@@ -14,14 +14,28 @@ class EvalCase(BaseModel):
     case_id: str = Field(pattern=r"^[a-z0-9][a-z0-9_-]{2,63}$")
     question: str = Field(min_length=4, max_length=1_000)
     tags: list[str] = Field(default_factory=list, max_length=10)
-    expected_intent: Literal["backtest_strategy", "query_market_data", "external_research", "other"]
+    expected_intent: Literal[
+        "backtest_strategy",
+        "query_market_data",
+        "external_research",
+        "incident_review",
+        "other",
+    ]
     expected_skill: Literal[
         "backtest-strategy",
         "query-market-data",
         "external-research",
+        "incident-review",
         "general-response",
     ]
-    expected_artifact: Literal["backtest", "market", "research", "general", "rejected"]
+    expected_artifact: Literal[
+        "backtest",
+        "market",
+        "research",
+        "incident",
+        "general",
+        "rejected",
+    ]
     expected_spec: dict[str, Any] = Field(default_factory=dict)
     expected_status: Literal["completed", "failed", "rejected", "pending_approval"] = "completed"
     approval_scenario: Literal["none", "approve"] = "none"

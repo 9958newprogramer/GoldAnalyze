@@ -27,6 +27,7 @@ MIN_INTENT_COUNTS = {
     "backtest_strategy": 40,
     "query_market_data": 20,
     "external_research": 10,
+    "incident_review": 10,
     "other": 20,
 }
 MIN_SCENARIO_COUNTS = {
@@ -42,6 +43,7 @@ _CATEGORY_TAGS = {
     "backtest_strategy": "backtest",
     "query_market_data": "market",
     "external_research": "research",
+    "incident_review": "incident",
     "other": "other",
 }
 _STANDARD_STAGES = {
@@ -74,6 +76,19 @@ _STANDARD_STAGES = {
         "approval_resume",
         "search_external_knowledge",
         "summarize_external_research",
+    ],
+    "incident": [
+        "route_intent",
+        "select_skill",
+        "build_plan",
+        "compile_incident_spec",
+        "cache_lookup",
+        "approval_resume",
+        "mcp__runtime__profile_text",
+        "validate_incident_spec",
+        "assess_incident_impact",
+        "build_incident_action_plan",
+        "summarize_incident_review",
     ],
     "general": [
         "route_intent",
@@ -211,6 +226,8 @@ def _artifact_spec(case: EvalCase, run: RunResponse) -> Any:
         return run.market_query
     if case.expected_artifact == "research":
         return run.research_spec
+    if case.expected_artifact == "incident":
+        return run.incident_spec
     return None
 
 
@@ -437,6 +454,7 @@ def _score_output(case: EvalCase, run: RunResponse) -> EvalDimension:
             (run.data_profile is not None, "缺少 data_profile"),
         ],
         "research": [(run.research_result is not None, "缺少 research_result")],
+        "incident": [(run.incident_result is not None, "缺少 incident_result")],
         "general": [(run.execution_mode == "direct", "其他意图未使用 direct 模式")],
         "rejected": [(run.execution_mode == "rejected", "危险请求未标记 rejected")],
     }

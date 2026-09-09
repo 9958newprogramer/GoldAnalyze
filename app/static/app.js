@@ -34,6 +34,12 @@ const marketMetricDefinitions = [
   ["average_volume", "Avg volume", ""],
 ];
 
+const incidentMetricDefinitions = [
+  ["severity", "Severity", ""],
+  ["risk_score", "Risk score", "/100"],
+  ["root_cause_status", "Root cause", ""],
+];
+
 function setText(selector, value) {
   const element = document.querySelector(selector);
   if (element) element.textContent = value;
@@ -412,7 +418,7 @@ function renderResult(run, jobId = null) {
       : "legacy run",
   );
   setText("#summary", run.summary);
-  const artifact = run.strategy || run.market_query || run.research_spec || run.route;
+  const artifact = run.incident_result || run.strategy || run.market_query || run.research_spec || run.route;
   setText("#strategy-spec", JSON.stringify(artifact, null, 2));
   renderWarnings(run.warnings);
   renderCache(run.cache, run.cache_status);
@@ -422,6 +428,7 @@ function renderResult(run, jobId = null) {
   renderAudit(run.tool_audit || []);
   if (run.metrics) renderMetrics(run.metrics, backtestMetricDefinitions);
   else if (run.market_result) renderMetrics(run.market_result, marketMetricDefinitions);
+  else if (run.incident_result) renderMetrics(run.incident_result, incidentMetricDefinitions);
   else renderMetrics(null, []);
   renderChart(run.equity_curve);
   renderSources(run.research_result ? run.research_result.sources : []);

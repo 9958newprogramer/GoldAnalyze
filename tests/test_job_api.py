@@ -61,6 +61,20 @@ def test_async_job_api_is_idempotent_and_returns_immediately(monkeypatch, tmp_pa
     assert conflict.status_code == 409
 
 
+def test_async_job_rejects_assigned_secret_before_persistence(monkeypatch, tmp_path):
+    services = configured_app(monkeypatch, tmp_path)
+    with TestClient(main_module.app) as client:
+        response = client.post(
+            "/api/jobs",
+            json={"question": "复盘 checkout-api 事故：错误率12%，token=super-secret-value。"},
+        )
+
+    assert response.status_code == 422
+    assert "super-secret-value" not in response.text
+    with services.jobs.connect() as connection:
+        assert connection.execute("SELECT COUNT(*) FROM agent_jobs").fetchone()[0] == 0
+
+
 def test_worker_result_and_sse_support_last_event_id_reconnect(monkeypatch, tmp_path):
     services = configured_app(monkeypatch, tmp_path)
     with TestClient(main_module.app) as client:
