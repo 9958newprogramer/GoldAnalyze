@@ -1,13 +1,19 @@
 import re
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
 
-client = TestClient(app)
+
+@pytest.fixture(scope="module")
+def client():
+    """Exercise the API with its real application lifespan."""
+    with TestClient(app) as test_client:
+        yield test_client
 
 
-def test_health_and_home_are_available():
+def test_health_and_home_are_available(client):
     health = client.get("/api/health")
     home = client.get("/")
 
@@ -64,24 +70,23 @@ def test_health_and_home_are_available():
     )
 
 
-def test_application_lifespan_discovers_mcp_client_tools():
-    with TestClient(app) as live_client:
-        health = live_client.get("/api/health").json()
-        catalog = live_client.get("/api/mcp/catalog")
-        tools = live_client.get("/api/tools").json()["tools"]
+def test_application_lifespan_discovers_mcp_client_tools(client):
+    health = client.get("/api/health").json()
+    catalog = client.get("/api/mcp/catalog")
+    tools = client.get("/api/tools").json()["tools"]
 
-        assert health["mcp_client_connected_servers"] == 1
-        assert health["mcp_client_discovered_tools"] == 2
-        assert catalog.status_code == 200
-        assert catalog.json()["servers"][0]["status"] == "connected"
-        assert {item["qualified_name"] for item in catalog.json()["tools"]} == {
-            "mcp__runtime__describe_runtime_capabilities",
-            "mcp__runtime__profile_text",
-        }
-        assert "mcp__runtime__profile_text" in tools
+    assert health["mcp_client_connected_servers"] == 1
+    assert health["mcp_client_discovered_tools"] == 2
+    assert catalog.status_code == 200
+    assert catalog.json()["servers"][0]["status"] == "connected"
+    assert {item["qualified_name"] for item in catalog.json()["tools"]} == {
+        "mcp__runtime__describe_runtime_capabilities",
+        "mcp__runtime__profile_text",
+    }
+    assert "mcp__runtime__profile_text" in tools
 
 
-def test_run_api_returns_trace_and_metrics():
+def test_run_api_returns_trace_and_metrics(client):
     response = client.post(
         "/api/runs",
         json={
@@ -101,12 +106,12 @@ def test_run_api_returns_trace_and_metrics():
     assert payload["cache_status"] == "bypass"
 
 
-def test_api_rejects_oversized_input():
+def test_api_rejects_oversized_input(client):
     response = client.post("/api/runs", json={"question": "x" * 1_001})
     assert response.status_code == 422
 
 
-def test_api_rejects_unknown_cache_policy():
+def test_api_rejects_unknown_cache_policy(client):
     response = client.post(
         "/api/runs",
         json={"question": "查询黄金最近5根日K线。", "cache_policy": "trust_everything"},
@@ -114,7 +119,7 @@ def test_api_rejects_unknown_cache_policy():
     assert response.status_code == 422
 
 
-def test_eval_api_runs_versioned_quality_gate():
+def test_eval_api_runs_versioned_quality_gate(client):
     cases = client.get("/api/evals/cases")
     response = client.post("/api/evals/run")
 
@@ -129,7 +134,7 @@ def test_eval_api_runs_versioned_quality_gate():
     assert payload["coverage"]["adversarial_cases"] == 16
 
 
-def test_external_tool_requires_explicit_one_time_approval():
+def test_external_tool_requires_explicit_one_time_approval(client):
     pending_response = client.post(
         "/api/runs",
         json={
@@ -192,7 +197,7 @@ def test_external_tool_requires_explicit_one_time_approval():
     )
 
 
-def test_operator_can_deny_pending_external_tool_without_execution():
+def test_operator_can_deny_pending_external_tool_without_execution(client):
     pending = client.post(
         "/api/runs",
         json={
@@ -218,7 +223,7 @@ def test_operator_can_deny_pending_external_tool_without_execution():
     assert not [item for item in denied["tool_audit"] if item["phase"] == "execution"]
 
 
-def test_cache_stats_api_is_observable():
+def test_cache_stats_api_is_observable(client):
     response = client.get("/api/cache/stats")
 
     assert response.status_code == 200
