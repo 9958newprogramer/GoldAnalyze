@@ -101,9 +101,18 @@ def test_run_api_returns_trace_and_metrics(client):
     assert payload["status"] == "completed"
     assert payload["metrics"]["trade_count"] >= 0
     assert payload["route"]["intent"] == "backtest_strategy"
-    assert len(payload["events"]) == 9
+    assert [event["stage"] for event in payload["events"]] == [
+        "route_intent",
+        "select_skill",
+        "build_plan",
+        "interpret_strategy",
+        "resolve_backtest_data_version",
+        "cache_lookup",
+        "execute_backtest",
+        "summarize_result",
+    ]
     assert payload["plan"]["validated"] is True
-    assert payload["plan"]["planned_tool_calls"] == 4
+    assert payload["plan"]["planned_tool_calls"] == 3
     assert payload["cache_status"] == "bypass"
 
 

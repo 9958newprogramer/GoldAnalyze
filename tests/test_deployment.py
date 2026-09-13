@@ -72,9 +72,17 @@ def test_docker_build_context_excludes_secrets_and_runs_as_non_root():
 
 def test_ci_runs_real_container_smoke_after_quality_gate():
     workflow = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"))
+    verify = workflow["jobs"]["verify"]
+    java_verify = workflow["jobs"]["java-verify"]
     smoke = workflow["jobs"]["container-smoke"]
 
-    assert smoke["needs"] == "verify"
+    verify_commands = "\n".join(step.get("run", "") for step in verify["steps"])
+    assert "python -m venv .venv" in verify_commands
+    assert ".venv/bin/python -m pip install -e '.[dev]'" in verify_commands
+
+    java_commands = "\n".join(step.get("run", "") for step in java_verify["steps"])
+    assert "./mvnw --batch-mode test" in java_commands
+    assert set(smoke["needs"]) == {"verify", "java-verify"}
     commands = "\n".join(step.get("run", "") for step in smoke["steps"])
     assert "docker compose config --quiet" in commands
     assert "docker build --tag aurumlab:1.0.0 ." in commands

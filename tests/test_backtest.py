@@ -12,7 +12,7 @@ def _bars_from_closes(closes: list[float]) -> list[Bar]:
             at=start + timedelta(days=index),
             open=close,
             high=close + 1,
-            low=close - 1,
+            low=max(close - 1, 0.01),
             close=close,
             volume=1_000,
         )

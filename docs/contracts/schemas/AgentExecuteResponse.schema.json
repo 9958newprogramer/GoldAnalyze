@@ -1279,100 +1279,6 @@
       "title": "MarketQuerySpec",
       "type": "object"
     },
-    "MessageMetadata": {
-      "additionalProperties": false,
-      "description": "Metadata carried in Kafka headers or a message envelope.\n\nTopic names and reply destinations are deployment configuration, never caller\ninput. This prevents an untrusted request from turning into an SSRF-like broker\nrouting primitive.",
-      "properties": {
-        "attempt": {
-          "default": 1,
-          "maximum": 3,
-          "minimum": 1,
-          "title": "Attempt",
-          "type": "integer"
-        },
-        "causation_id": {
-          "anyOf": [
-            {
-              "maxLength": 128,
-              "minLength": 8,
-              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Causation Id"
-        },
-        "correlation_id": {
-          "maxLength": 128,
-          "minLength": 8,
-          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
-          "title": "Correlation Id",
-          "type": "string"
-        },
-        "message_id": {
-          "format": "uuid",
-          "title": "Message Id",
-          "type": "string"
-        },
-        "occurred_at": {
-          "format": "date-time",
-          "title": "Occurred At",
-          "type": "string"
-        },
-        "producer": {
-          "enum": [
-            "control-plane",
-            "agent-service",
-            "backtest-service"
-          ],
-          "title": "Producer",
-          "type": "string"
-        },
-        "schema_version": {
-          "const": "message-metadata-v1",
-          "default": "message-metadata-v1",
-          "title": "Schema Version",
-          "type": "string"
-        },
-        "traceparent": {
-          "anyOf": [
-            {
-              "pattern": "^00-[0-9a-f]{32}-[0-9a-f]{16}-0[01]$",
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Traceparent"
-        },
-        "tracestate": {
-          "anyOf": [
-            {
-              "maxLength": 512,
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Tracestate"
-        }
-      },
-      "required": [
-        "message_id",
-        "correlation_id",
-        "producer",
-        "occurred_at"
-      ],
-      "title": "MessageMetadata",
-      "type": "object"
-    },
     "PlanStep": {
       "additionalProperties": false,
       "description": "One bounded executor step derived from a versioned Skill manifest.",
@@ -1424,82 +1330,6 @@
         "kind"
       ],
       "title": "PlanStep",
-      "type": "object"
-    },
-    "ProblemDetails": {
-      "additionalProperties": false,
-      "description": "Stable RFC 7807-style error body; internal exception text is excluded.",
-      "properties": {
-        "code": {
-          "pattern": "^[A-Z][A-Z0-9_]{2,63}$",
-          "title": "Code",
-          "type": "string"
-        },
-        "detail": {
-          "maxLength": 300,
-          "minLength": 1,
-          "title": "Detail",
-          "type": "string"
-        },
-        "request_id": {
-          "anyOf": [
-            {
-              "maxLength": 128,
-              "minLength": 8,
-              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Request Id"
-        },
-        "retryable": {
-          "default": false,
-          "title": "Retryable",
-          "type": "boolean"
-        },
-        "status": {
-          "maximum": 599,
-          "minimum": 400,
-          "title": "Status",
-          "type": "integer"
-        },
-        "title": {
-          "maxLength": 120,
-          "minLength": 1,
-          "title": "Title",
-          "type": "string"
-        },
-        "trace_id": {
-          "anyOf": [
-            {
-              "pattern": "^[0-9a-f]{32}$",
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Trace Id"
-        },
-        "type": {
-          "default": "about:blank",
-          "maxLength": 256,
-          "title": "Type",
-          "type": "string"
-        }
-      },
-      "required": [
-        "title",
-        "status",
-        "code",
-        "detail"
-      ],
-      "title": "ProblemDetails",
       "type": "object"
     },
     "ResearchSource": {
@@ -1724,35 +1554,18 @@
   "additionalProperties": false,
   "properties": {
     "artifact": {
-      "anyOf": [
-        {
-          "$ref": "#/$defs/AgentResultArtifact"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "default": null
+      "$ref": "#/$defs/AgentResultArtifact"
     },
-    "error": {
-      "anyOf": [
-        {
-          "$ref": "#/$defs/ProblemDetails"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "default": null
+    "duration_ms": {
+      "minimum": 0,
+      "title": "Duration Ms",
+      "type": "number"
     },
-    "event_type": {
-      "enum": [
-        "agent.run.completed.v1",
-        "agent.run.rejected.v1",
-        "agent.run.approval-required.v1",
-        "agent.run.failed.v1"
-      ],
-      "title": "Event Type",
+    "execution_id": {
+      "maxLength": 128,
+      "minLength": 8,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+      "title": "Execution Id",
       "type": "string"
     },
     "job_id": {
@@ -1762,8 +1575,17 @@
       "title": "Job Id",
       "type": "string"
     },
-    "metadata": {
-      "$ref": "#/$defs/MessageMetadata"
+    "request_id": {
+      "maxLength": 128,
+      "minLength": 8,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+      "title": "Request Id",
+      "type": "string"
+    },
+    "result_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Result Digest",
+      "type": "string"
     },
     "run_id": {
       "maxLength": 128,
@@ -1773,18 +1595,21 @@
       "type": "string"
     },
     "schema_version": {
-      "const": "agent-run-result-v1",
-      "default": "agent-run-result-v1",
+      "const": "agent-execute-result-v1",
+      "default": "agent-execute-result-v1",
       "title": "Schema Version",
       "type": "string"
     }
   },
   "required": [
-    "event_type",
-    "metadata",
+    "request_id",
     "job_id",
-    "run_id"
+    "run_id",
+    "execution_id",
+    "artifact",
+    "result_digest",
+    "duration_ms"
   ],
-  "title": "AgentRunResultEvent",
+  "title": "AgentExecuteResponse",
   "type": "object"
 }

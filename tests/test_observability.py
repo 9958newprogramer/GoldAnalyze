@@ -157,7 +157,9 @@ def test_memory_export_is_bounded_and_metric_dimensions_are_bounded():
     telemetry.shutdown()
 
 
-def test_real_otlp_http_exporters_send_trace_and_metrics_protobuf():
+def test_real_otlp_http_exporters_send_trace_and_metrics_protobuf(monkeypatch):
+    monkeypatch.setenv("NO_PROXY", "127.0.0.1,localhost")
+    monkeypatch.setenv("no_proxy", "127.0.0.1,localhost")
     OTLPTestHandler.requests = []
     server = ThreadingHTTPServer(("127.0.0.1", 0), OTLPTestHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)

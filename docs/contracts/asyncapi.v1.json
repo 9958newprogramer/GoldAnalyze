@@ -44,11 +44,26 @@
   },
   "components": {
     "schemas": {
+      "AgentExecuteRequest": {
+        "$ref": "./schemas/AgentExecuteRequest.schema.json"
+      },
+      "AgentExecuteResponse": {
+        "$ref": "./schemas/AgentExecuteResponse.schema.json"
+      },
+      "AgentResultArtifact": {
+        "$ref": "./schemas/AgentResultArtifact.schema.json"
+      },
       "AgentRunRequestedCommand": {
         "$ref": "./schemas/AgentRunRequestedCommand.schema.json"
       },
       "AgentRunResultEvent": {
         "$ref": "./schemas/AgentRunResultEvent.schema.json"
+      },
+      "BacktestDataVersionRequest": {
+        "$ref": "./schemas/BacktestDataVersionRequest.schema.json"
+      },
+      "BacktestDataVersionResponse": {
+        "$ref": "./schemas/BacktestDataVersionResponse.schema.json"
       },
       "BacktestExecuteRequest": {
         "$ref": "./schemas/BacktestExecuteRequest.schema.json"

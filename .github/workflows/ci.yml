@@ -42,13 +42,37 @@ jobs:
           cache: pip
 
       - name: Install project and test dependencies
-        run: python -m pip install -e '.[dev]'
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install -e '.[dev]'
 
       - name: Run lint, tests, Redis integration, Agent eval, and contract drift gates
         run: make verify
 
+  java-verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: control-plane
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Java 21
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+
+      - name: Run Java control-plane tests
+        run: ./mvnw --batch-mode test
+
   container-smoke:
-    needs: verify
+    needs: [verify, java-verify]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:

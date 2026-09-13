@@ -57,9 +57,7 @@ class Settings:
     agent_service_port: int = _port_from_env("AGENT_SERVICE_PORT", 8011)
     backtest_service_host: str = os.getenv("BACKTEST_SERVICE_HOST", "127.0.0.1")
     backtest_service_port: int = _port_from_env("BACKTEST_SERVICE_PORT", 8020)
-    backtest_service_url: str = os.getenv(
-        "BACKTEST_SERVICE_URL", "http://127.0.0.1:8020"
-    )
+    backtest_service_url: str = os.getenv("BACKTEST_SERVICE_URL", "http://127.0.0.1:8020")
     backtest_service_timeout_seconds: float = _bounded_float_from_env(
         "BACKTEST_SERVICE_TIMEOUT_SECONDS", 30.0, 0.1, 300.0
     )

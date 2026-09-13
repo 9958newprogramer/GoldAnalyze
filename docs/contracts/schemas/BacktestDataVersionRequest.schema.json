@@ -1,0 +1,148 @@
+{
+  "$defs": {
+    "StrategySpec": {
+      "additionalProperties": false,
+      "properties": {
+        "end_date": {
+          "anyOf": [
+            {
+              "format": "date",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "End Date"
+        },
+        "execution": {
+          "const": "next_bar_open",
+          "default": "next_bar_open",
+          "title": "Execution",
+          "type": "string"
+        },
+        "fast_window": {
+          "default": 20,
+          "maximum": 200,
+          "minimum": 2,
+          "title": "Fast Window",
+          "type": "integer"
+        },
+        "fee_bps": {
+          "default": 2.0,
+          "maximum": 100,
+          "minimum": 0,
+          "title": "Fee Bps",
+          "type": "number"
+        },
+        "initial_cash": {
+          "default": 100000.0,
+          "exclusiveMinimum": 0,
+          "maximum": 100000000,
+          "title": "Initial Cash",
+          "type": "number"
+        },
+        "long_only": {
+          "const": true,
+          "default": true,
+          "title": "Long Only",
+          "type": "boolean"
+        },
+        "slippage_bps": {
+          "default": 3.0,
+          "maximum": 100,
+          "minimum": 0,
+          "title": "Slippage Bps",
+          "type": "number"
+        },
+        "slow_window": {
+          "default": 60,
+          "maximum": 400,
+          "minimum": 3,
+          "title": "Slow Window",
+          "type": "integer"
+        },
+        "start_date": {
+          "anyOf": [
+            {
+              "format": "date",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Start Date"
+        },
+        "strategy_type": {
+          "const": "sma_crossover",
+          "default": "sma_crossover",
+          "title": "Strategy Type",
+          "type": "string"
+        },
+        "symbol": {
+          "default": "XAUUSD",
+          "maxLength": 32,
+          "minLength": 1,
+          "title": "Symbol",
+          "type": "string"
+        },
+        "timeframe": {
+          "default": "1d",
+          "enum": [
+            "1d",
+            "1h"
+          ],
+          "title": "Timeframe",
+          "type": "string"
+        }
+      },
+      "title": "StrategySpec",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Small preflight request used to build a cache-safe task fingerprint.",
+  "properties": {
+    "job_id": {
+      "maxLength": 128,
+      "minLength": 8,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+      "title": "Job Id",
+      "type": "string"
+    },
+    "request_id": {
+      "maxLength": 128,
+      "minLength": 8,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+      "title": "Request Id",
+      "type": "string"
+    },
+    "run_id": {
+      "maxLength": 128,
+      "minLength": 8,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+      "title": "Run Id",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "backtest-data-version-request-v1",
+      "default": "backtest-data-version-request-v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "strategy": {
+      "$ref": "#/$defs/StrategySpec"
+    }
+  },
+  "required": [
+    "request_id",
+    "job_id",
+    "run_id",
+    "strategy"
+  ],
+  "title": "BacktestDataVersionRequest",
+  "type": "object"
+}

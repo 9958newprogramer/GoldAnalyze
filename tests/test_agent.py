@@ -186,9 +186,9 @@ async def test_equivalent_strategy_phrasing_reuses_persisted_artifact(tmp_path):
     assert reused.cache.source_run_id == source.run_id
     assert reused.cache.saved_tool_calls == 2
     assert reused.metrics == source.metrics
-    assert [
-        item["tool"] for item in reused.tool_audit if item["phase"] == "execution"
-    ] == ["resolve_backtest_data_version"]
+    assert [item["tool"] for item in reused.tool_audit if item["phase"] == "execution"] == [
+        "resolve_backtest_data_version"
+    ]
     assert reused.plan is not None
     assert reused.plan.completed_steps == [
         "interpret_strategy",
