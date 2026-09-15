@@ -7,12 +7,21 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.Optional;
 
+import org.springframework.beans.factory.annotation.Qualifier;
+
 @Repository
 public class AgentJobRepository {
 
     private final JdbcTemplate jdbcTemplate;
 
-    public AgentJobRepository(JdbcTemplate jdbcTemplate) {
+    /**
+     * 初始化任务仓库，并显式使用 MySQL 控制面 JdbcTemplate。
+     *
+     * @param jdbcTemplate MySQL 主业务数据库 JdbcTemplate
+     */
+    public AgentJobRepository(
+            @Qualifier("appJdbcTemplate") JdbcTemplate jdbcTemplate
+    ) {
         this.jdbcTemplate = jdbcTemplate;
     }
 
@@ -33,6 +42,36 @@ public class AgentJobRepository {
                 question
         );
     }
+
+    /**
+     * 创建批量回测父任务。
+     *
+     * <p>当前 MVP 继续复用 agent_job 表，
+     * 通过 job_type=BACKTEST_BATCH 区分普通 Agent 任务与批量回测任务。</p>
+     *
+     * @param jobId          父任务 ID
+     * @param requestId      请求 ID
+     * @param idempotencyKey 幂等键
+     * @param description    批量回测任务描述
+     */
+    public void saveBacktestBatch(
+            String jobId,
+            String requestId,
+            String idempotencyKey,
+            String description
+    ) {
+        jdbcTemplate.update("""
+                INSERT INTO agent_job
+                (job_id, request_id, idempotency_key, question, job_type, status)
+                VALUES (?, ?, ?, ?, 'BACKTEST_BATCH', 'QUEUED')
+                """,
+                jobId,
+                requestId,
+                idempotencyKey,
+                description
+        );
+    }
+
 /**
  * 将指定任务标记为运行中，并记录开始执行时间。
  */

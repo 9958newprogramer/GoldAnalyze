@@ -10,6 +10,9 @@ from app.contracts.v1 import (
     BacktestDataVersionResponse,
     BacktestExecuteRequest,
     BacktestExecuteResponse,
+    BacktestPlanRequest,
+    BacktestPlanResponse,
+    BacktestSubtaskPlan,
     BacktestRunRequestedCommand,
     BacktestRunResultEvent,
     MessageMetadata,
@@ -32,4 +35,7 @@ __all__ = [
     "MessageMetadata",
     "ProblemDetails",
     "ServiceHealth",
+    "BacktestPlanRequest",
+    "BacktestPlanResponse",
+    "BacktestSubtaskPlan",
 ]

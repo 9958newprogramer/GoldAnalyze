@@ -6,7 +6,7 @@ plane owns durable state; Python receives bounded commands and returns artifacts
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Annotated, Literal
 from uuid import UUID
 
@@ -78,6 +78,49 @@ class MessageMetadata(StrictContract):
         if self.occurred_at.tzinfo is None:
             raise ValueError("occurred_at must include a timezone")
         return self
+
+class BacktestPlanRequest(StrictContract):
+    """Java 请求 Python 为一个父任务生成批量回测子任务。"""
+
+    schema_version: Literal["backtest-plan-request-v1"] = "backtest-plan-request-v1"
+    request_id: OpaqueId
+    job_id: OpaqueId
+    symbol: str = Field(min_length=1, max_length=32)
+    start_date: date
+    end_date: date
+    interval_days: int = Field(default=30, ge=1, le=365)
+    lookback_days: int = Field(default=60, ge=1, le=365)
+    forward_days: int = Field(default=60, ge=1, le=365)
+
+    @model_validator(mode="after")
+    def validate_date_range(self) -> BacktestPlanRequest:
+        """确保规划时间范围合法。"""
+        if self.end_date <= self.start_date:
+            raise ValueError("end_date must be later than start_date")
+        return self
+
+
+class BacktestSubtaskPlan(StrictContract):
+    """Python Planner 返回给 Java 的单个逻辑回测子任务。"""
+
+    subtask_id: OpaqueId
+    symbol: str = Field(min_length=1, max_length=32)
+    anchor_date: date
+    start_date: date
+    end_date: date
+
+
+class BacktestPlanResponse(StrictContract):
+    """Python Planner 为一个父任务生成的完整子任务计划。"""
+
+    schema_version: Literal["backtest-plan-result-v1"] = "backtest-plan-result-v1"
+    request_id: OpaqueId
+    job_id: OpaqueId
+    total: int = Field(ge=0, le=100_000)
+    subtasks: list[BacktestSubtaskPlan] = Field(
+        default_factory=list,
+        max_length=100_000,
+    )
 
 
 class BacktestExecuteRequest(StrictContract):

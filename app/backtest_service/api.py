@@ -30,9 +30,12 @@ from app.contracts import (
     BacktestExecuteResponse,
     ProblemDetails,
     ServiceHealth,
+    BacktestPlanRequest,
+    BacktestPlanResponse,
 )
 from app.domain.market_data import MarketDataRepository, build_market_repository
 from app.observability import Telemetry
+from app.backtest_service.planner import plan_backtests
 
 
 def _problem(
@@ -220,6 +223,22 @@ def create_app(
             run_id=payload.run_id,
             data_version=data_version,
         )
+
+    @service.post(
+        "/internal/v1/backtests/plan",
+        response_model=BacktestPlanResponse,
+        responses={
+            401: {"model": ProblemDetails},
+            422: {"model": ProblemDetails},
+        },
+        dependencies=[Depends(require_control_plane)],
+    )
+    async def plan_batch_backtests(
+        payload: BacktestPlanRequest,
+    ) -> BacktestPlanResponse:
+        """为 Java Control Plane 生成确定性的批量回测子任务计划。"""
+
+        return await run_in_threadpool(plan_backtests, payload)
 
     @service.post(
         "/internal/v1/backtests/execute",

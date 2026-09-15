@@ -7,6 +7,8 @@ import json
 import math
 import re
 import sqlite3
+import psycopg
+
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
@@ -118,6 +120,182 @@ def _parse_timestamp(value: object) -> datetime:
         parsed = parsed.replace(tzinfo=UTC)
     return parsed.astimezone(UTC)
 
+class PostgresMarketDataRepository:
+    """从只读 PostgreSQL 黄金行情库加载真实 OHLCV 数据。"""
+
+    synthetic = False
+    source_name = "postgresql:gold"
+
+    def __init__(self, settings: Settings):
+        if not settings.market_postgres_dsn:
+            raise ValueError("MARKET_POSTGRES_DSN 未配置")
+
+        self.dsn = settings.market_postgres_dsn
+
+    def data_version(self, spec: StrategySpec) -> str:
+        """根据当前查询范围和行情更新时间生成稳定的数据版本。"""
+
+        if spec.timeframe == "1d":
+            sql = """
+                SELECT
+                    COUNT(*),
+                    MIN(trade_date),
+                    MAX(trade_date),
+                    MAX(as_of)
+                FROM gold.daily_bar
+                WHERE symbol = %s
+                  AND trade_date >= %s
+                  AND trade_date <= %s
+            """
+            params = (
+                spec.symbol,
+                spec.start_date,
+                spec.end_date,
+            )
+
+        elif spec.timeframe == "1h":
+            sql = """
+                SELECT
+                    COUNT(*),
+                    MIN(bar_time),
+                    MAX(bar_time),
+                    MAX(as_of)
+                FROM gold.hourly_bar
+                WHERE symbol = %s
+                  AND bar_time >= %s
+                  AND bar_time < %s
+            """
+
+            start_time = datetime.combine(
+                spec.start_date,
+                time.min,
+                tzinfo=UTC,
+            )
+            end_time = datetime.combine(
+                spec.end_date + timedelta(days=1),
+                time.min,
+                tzinfo=UTC,
+            )
+
+            params = (
+                spec.symbol,
+                start_time,
+                end_time,
+            )
+
+        else:
+            raise ValueError(
+                f"PostgreSQL 暂不支持该回测周期：{spec.timeframe}"
+            )
+
+        with psycopg.connect(self.dsn) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(sql, params)
+                row = cursor.fetchone()
+
+        material = {
+            "source": self.source_name,
+            "symbol": spec.symbol,
+            "timeframe": spec.timeframe,
+            "start_date": spec.start_date,
+            "end_date": spec.end_date,
+            "row_count": row[0],
+            "first_bar": row[1],
+            "last_bar": row[2],
+            "as_of": row[3],
+        }
+
+        digest = hashlib.sha256(
+            json.dumps(
+                material,
+                sort_keys=True,
+                separators=(",", ":"),
+                default=str,
+            ).encode()
+        ).hexdigest()[:16]
+
+        return f"postgres-v1:{digest}"
+
+    def load(self, spec: StrategySpec) -> list[Bar]:
+        """按 StrategySpec 的标的、周期和时间范围读取真实 K 线。"""
+
+        if spec.timeframe == "1d":
+            sql = """
+                SELECT
+                    trade_date,
+                    open,
+                    high,
+                    low,
+                    close,
+                    volume
+                FROM gold.daily_bar
+                WHERE symbol = %s
+                  AND trade_date >= %s
+                  AND trade_date <= %s
+                ORDER BY trade_date ASC
+            """
+
+            params = (
+                spec.symbol,
+                spec.start_date,
+                spec.end_date,
+            )
+
+        elif spec.timeframe == "1h":
+            sql = """
+                SELECT
+                    bar_time,
+                    open,
+                    high,
+                    low,
+                    close,
+                    volume
+                FROM gold.hourly_bar
+                WHERE symbol = %s
+                  AND bar_time >= %s
+                  AND bar_time < %s
+                ORDER BY bar_time ASC
+            """
+
+            start_time = datetime.combine(
+                spec.start_date,
+                time.min,
+                tzinfo=UTC,
+            )
+            end_time = datetime.combine(
+                spec.end_date + timedelta(days=1),
+                time.min,
+                tzinfo=UTC,
+            )
+
+            params = (
+                spec.symbol,
+                start_time,
+                end_time,
+            )
+
+        else:
+            raise ValueError(
+                f"PostgreSQL 暂不支持该回测周期：{spec.timeframe}"
+            )
+
+        with psycopg.connect(self.dsn) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(sql, params)
+                rows = cursor.fetchall()
+
+        return [
+            Bar(
+                at=_parse_timestamp(row[0]),
+                open=float(row[1]),
+                high=float(row[2]),
+                low=float(row[3]),
+                close=float(row[4]),
+                volume=float(row[5] or 0),
+            )
+            for row in rows
+        ]
+
 
 class SQLiteMarketDataRepository:
     """Load OHLCV bars through a parameterized, read-only SQLite connection."""
@@ -196,8 +374,14 @@ class SQLiteMarketDataRepository:
 
 
 def build_market_repository(settings: Settings) -> MarketDataRepository:
+    """根据配置选择真实 PostgreSQL、SQLite 或 Demo 行情源。"""
+
+    if settings.market_postgres_dsn:
+        return PostgresMarketDataRepository(settings)
+
     if settings.market_db_path:
         return SQLiteMarketDataRepository(settings)
+
     return DemoMarketDataRepository()
 
 

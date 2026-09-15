@@ -81,6 +81,7 @@ class Settings:
     llm_model: str = os.getenv("LLM_MODEL", "gpt-5-mini")
     tavily_api_key: str | None = os.getenv("TAVILY_API_KEY") or None
     tavily_base_url: str = os.getenv("TAVILY_BASE_URL", "https://api.tavily.com")
+    market_postgres_dsn: str | None = os.getenv("MARKET_POSTGRES_DSN") or None
     market_db_path: str | None = os.getenv("MARKET_DB_PATH") or None
     market_table: str = os.getenv("MARKET_TABLE", "gold_bars")
     market_time_column: str = os.getenv("MARKET_TIME_COLUMN", "timestamp")
