@@ -1,0 +1,36 @@
+{
+  "additionalProperties": false,
+  "description": "One matched event and its trading-day forward returns.",
+  "properties": {
+    "event_date": {
+      "format": "date",
+      "title": "Event Date",
+      "type": "string"
+    },
+    "event_return_pct": {
+      "title": "Event Return Pct",
+      "type": "number"
+    },
+    "forward_returns": {
+      "additionalProperties": {
+        "anyOf": [
+          {
+            "type": "number"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "title": "Forward Returns",
+      "type": "object"
+    }
+  },
+  "required": [
+    "event_date",
+    "event_return_pct",
+    "forward_returns"
+  ],
+  "title": "EventStudyEvent",
+  "type": "object"
+}

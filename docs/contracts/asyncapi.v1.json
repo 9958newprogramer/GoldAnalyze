@@ -77,6 +77,21 @@
       "BacktestRunResultEvent": {
         "$ref": "./schemas/BacktestRunResultEvent.schema.json"
       },
+      "EventCondition": {
+        "$ref": "./schemas/EventCondition.schema.json"
+      },
+      "EventHorizonStatistics": {
+        "$ref": "./schemas/EventHorizonStatistics.schema.json"
+      },
+      "EventStudyEvent": {
+        "$ref": "./schemas/EventStudyEvent.schema.json"
+      },
+      "EventStudyRequest": {
+        "$ref": "./schemas/EventStudyRequest.schema.json"
+      },
+      "EventStudyResponse": {
+        "$ref": "./schemas/EventStudyResponse.schema.json"
+      },
       "MessageMetadata": {
         "$ref": "./schemas/MessageMetadata.schema.json"
       },

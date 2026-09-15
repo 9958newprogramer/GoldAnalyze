@@ -10,7 +10,7 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Annotated, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
+from pydantic import BaseModel, ConfigDict, Field, FiniteFloat, StringConstraints, model_validator
 
 from app.models import (
     AgentEvent,
@@ -78,6 +78,7 @@ class MessageMetadata(StrictContract):
         if self.occurred_at.tzinfo is None:
             raise ValueError("occurred_at must include a timezone")
         return self
+
 
 class BacktestPlanRequest(StrictContract):
     """Java 请求 Python 为一个父任务生成批量回测子任务。"""
@@ -200,6 +201,110 @@ class BacktestExecuteResponse(StrictContract):
     warnings: list[str] = Field(default_factory=list, max_length=32)
     result_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     duration_ms: float = Field(ge=0)
+
+
+class EventCondition(StrictContract):
+    """One return condition evaluated relative to an event anchor trading day."""
+
+    offset: int = Field(ge=-30, le=0)
+    field: Literal["return_pct"] = "return_pct"
+    operator: Literal["gt", "gte", "lt", "lte", "between"]
+    value: FiniteFloat | None = None
+    min: FiniteFloat | None = None
+    max: FiniteFloat | None = None
+
+    @model_validator(mode="after")
+    def validate_operator_arguments(self) -> EventCondition:
+        """Require exactly the operands used by the selected operator."""
+
+        if self.operator == "between":
+            if self.min is None or self.max is None:
+                raise ValueError("between requires min and max")
+            if self.min > self.max:
+                raise ValueError("between requires min <= max")
+            if self.value is not None:
+                raise ValueError("between does not allow value")
+        else:
+            if self.value is None:
+                raise ValueError(f"{self.operator} requires value")
+            if self.min is not None or self.max is not None:
+                raise ValueError(f"{self.operator} does not allow min or max")
+        return self
+
+
+class EventStudyRequest(StrictContract):
+    """Bounded daily XAUUSD historical-event study request."""
+
+    schema_version: Literal["event-study-request-v1"] = "event-study-request-v1"
+    request_id: OpaqueId
+    job_id: OpaqueId
+    event_name: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+    symbol: Literal["XAUUSD"] = "XAUUSD"
+    timeframe: Literal["1d"] = "1d"
+    start_date: date
+    end_date: date
+    conditions: list[EventCondition] = Field(min_length=1, max_length=64)
+    forward_days: list[Annotated[int, Field(strict=True, gt=0)]] = Field(
+        min_length=1,
+        max_length=64,
+    )
+
+    @model_validator(mode="after")
+    def validate_event_study(self) -> EventStudyRequest:
+        """Validate date, anchor-condition, and horizon invariants."""
+
+        if self.end_date <= self.start_date:
+            raise ValueError("end_date must be later than start_date")
+        if not any(condition.offset == 0 for condition in self.conditions):
+            raise ValueError("conditions must include at least one offset=0 condition")
+        if len(self.forward_days) != len(set(self.forward_days)):
+            raise ValueError("forward_days must not contain duplicates")
+        return self
+
+
+class EventStudyEvent(StrictContract):
+    """One matched event and its trading-day forward returns."""
+
+    event_date: date
+    event_return_pct: FiniteFloat
+    forward_returns: dict[str, FiniteFloat | None]
+
+
+class EventHorizonStatistics(StrictContract):
+    """Aggregate performance for one forward trading-day horizon."""
+
+    sample_count: int = Field(ge=0)
+    positive_count: int = Field(ge=0)
+    negative_count: int = Field(ge=0)
+    positive_rate_pct: FiniteFloat
+    average_return_pct: FiniteFloat | None
+    median_return_pct: FiniteFloat | None
+    min_return_pct: FiniteFloat | None
+    max_return_pct: FiniteFloat | None
+
+
+class EventStudyResponse(StrictContract):
+    """Deterministic event details, horizon statistics, and source identity."""
+
+    schema_version: Literal["event-study-result-v1"] = "event-study-result-v1"
+    request_id: OpaqueId
+    job_id: OpaqueId
+    event_name: str = Field(min_length=1, max_length=128)
+    symbol: Literal["XAUUSD"] = "XAUUSD"
+    timeframe: Literal["1d"] = "1d"
+    event_count: int = Field(ge=0)
+    events: list[EventStudyEvent]
+    statistics: dict[str, EventHorizonStatistics]
+    data_profile: DataProfile
+    data_version: str = Field(min_length=3, max_length=128)
+
+    @model_validator(mode="after")
+    def validate_result_counts(self) -> EventStudyResponse:
+        """Keep the declared event count consistent with event details."""
+
+        if self.event_count != len(self.events):
+            raise ValueError("event_count must equal the number of events")
+        return self
 
 
 class ProblemDetails(StrictContract):

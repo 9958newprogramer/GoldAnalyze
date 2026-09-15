@@ -1,0 +1,265 @@
+{
+  "$defs": {
+    "DataProfile": {
+      "properties": {
+        "duplicate_timestamps": {
+          "default": 0,
+          "title": "Duplicate Timestamps",
+          "type": "integer"
+        },
+        "end_at": {
+          "format": "date-time",
+          "title": "End At",
+          "type": "string"
+        },
+        "non_positive_prices": {
+          "default": 0,
+          "title": "Non Positive Prices",
+          "type": "integer"
+        },
+        "row_count": {
+          "title": "Row Count",
+          "type": "integer"
+        },
+        "source": {
+          "title": "Source",
+          "type": "string"
+        },
+        "start_at": {
+          "format": "date-time",
+          "title": "Start At",
+          "type": "string"
+        },
+        "symbol": {
+          "title": "Symbol",
+          "type": "string"
+        },
+        "synthetic": {
+          "title": "Synthetic",
+          "type": "boolean"
+        },
+        "timeframe": {
+          "title": "Timeframe",
+          "type": "string"
+        },
+        "warnings": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Warnings",
+          "type": "array"
+        }
+      },
+      "required": [
+        "source",
+        "synthetic",
+        "symbol",
+        "timeframe",
+        "row_count",
+        "start_at",
+        "end_at"
+      ],
+      "title": "DataProfile",
+      "type": "object"
+    },
+    "EventHorizonStatistics": {
+      "additionalProperties": false,
+      "description": "Aggregate performance for one forward trading-day horizon.",
+      "properties": {
+        "average_return_pct": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Average Return Pct"
+        },
+        "max_return_pct": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Max Return Pct"
+        },
+        "median_return_pct": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Median Return Pct"
+        },
+        "min_return_pct": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Min Return Pct"
+        },
+        "negative_count": {
+          "minimum": 0,
+          "title": "Negative Count",
+          "type": "integer"
+        },
+        "positive_count": {
+          "minimum": 0,
+          "title": "Positive Count",
+          "type": "integer"
+        },
+        "positive_rate_pct": {
+          "title": "Positive Rate Pct",
+          "type": "number"
+        },
+        "sample_count": {
+          "minimum": 0,
+          "title": "Sample Count",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "sample_count",
+        "positive_count",
+        "negative_count",
+        "positive_rate_pct",
+        "average_return_pct",
+        "median_return_pct",
+        "min_return_pct",
+        "max_return_pct"
+      ],
+      "title": "EventHorizonStatistics",
+      "type": "object"
+    },
+    "EventStudyEvent": {
+      "additionalProperties": false,
+      "description": "One matched event and its trading-day forward returns.",
+      "properties": {
+        "event_date": {
+          "format": "date",
+          "title": "Event Date",
+          "type": "string"
+        },
+        "event_return_pct": {
+          "title": "Event Return Pct",
+          "type": "number"
+        },
+        "forward_returns": {
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "title": "Forward Returns",
+          "type": "object"
+        }
+      },
+      "required": [
+        "event_date",
+        "event_return_pct",
+        "forward_returns"
+      ],
+      "title": "EventStudyEvent",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Deterministic event details, horizon statistics, and source identity.",
+  "properties": {
+    "data_profile": {
+      "$ref": "#/$defs/DataProfile"
+    },
+    "data_version": {
+      "maxLength": 128,
+      "minLength": 3,
+      "title": "Data Version",
+      "type": "string"
+    },
+    "event_count": {
+      "minimum": 0,
+      "title": "Event Count",
+      "type": "integer"
+    },
+    "event_name": {
+      "maxLength": 128,
+      "minLength": 1,
+      "title": "Event Name",
+      "type": "string"
+    },
+    "events": {
+      "items": {
+        "$ref": "#/$defs/EventStudyEvent"
+      },
+      "title": "Events",
+      "type": "array"
+    },
+    "job_id": {
+      "maxLength": 128,
+      "minLength": 8,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+      "title": "Job Id",
+      "type": "string"
+    },
+    "request_id": {
+      "maxLength": 128,
+      "minLength": 8,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+      "title": "Request Id",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "event-study-result-v1",
+      "default": "event-study-result-v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "statistics": {
+      "additionalProperties": {
+        "$ref": "#/$defs/EventHorizonStatistics"
+      },
+      "title": "Statistics",
+      "type": "object"
+    },
+    "symbol": {
+      "const": "XAUUSD",
+      "default": "XAUUSD",
+      "title": "Symbol",
+      "type": "string"
+    },
+    "timeframe": {
+      "const": "1d",
+      "default": "1d",
+      "title": "Timeframe",
+      "type": "string"
+    }
+  },
+  "required": [
+    "request_id",
+    "job_id",
+    "event_name",
+    "event_count",
+    "events",
+    "statistics",
+    "data_profile",
+    "data_version"
+  ],
+  "title": "EventStudyResponse",
+  "type": "object"
+}

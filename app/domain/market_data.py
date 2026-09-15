@@ -7,12 +7,12 @@ import json
 import math
 import re
 import sqlite3
-import psycopg
-
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from typing import Protocol
+
+import psycopg
 
 from app.config import Settings
 from app.models import DataProfile, StrategySpec
@@ -28,13 +28,22 @@ class Bar:
     volume: float
 
 
+class MarketDataSpec(Protocol):
+    """Structural query fields shared by strategy and event-study requests."""
+
+    symbol: str
+    timeframe: str
+    start_date: date | None
+    end_date: date | None
+
+
 class MarketDataRepository(Protocol):
     source_name: str
     synthetic: bool
 
-    def load(self, spec: StrategySpec) -> list[Bar]: ...
+    def load(self, spec: MarketDataSpec) -> list[Bar]: ...
 
-    def data_version(self, spec: StrategySpec) -> str: ...
+    def data_version(self, spec: MarketDataSpec) -> str: ...
 
 
 def _within_range(value: datetime, start: date | None, end: date | None) -> bool:
@@ -48,7 +57,7 @@ class DemoMarketDataRepository:
     source_name = "deterministic-demo"
     synthetic = True
 
-    def data_version(self, spec: StrategySpec) -> str:
+    def data_version(self, spec: MarketDataSpec) -> str:
         return f"demo-v1:{spec.symbol}:{spec.timeframe}"
 
     @staticmethod
@@ -56,7 +65,7 @@ class DemoMarketDataRepository:
         state = (1_664_525 * state + 1_013_904_223) % (2**32)
         return state, state / (2**32)
 
-    def load(self, spec: StrategySpec) -> list[Bar]:
+    def load(self, spec: MarketDataSpec) -> list[Bar]:
         state = 2_026_090_6
         previous_close = 1_270.0
         bars: list[Bar] = []
@@ -120,6 +129,7 @@ def _parse_timestamp(value: object) -> datetime:
         parsed = parsed.replace(tzinfo=UTC)
     return parsed.astimezone(UTC)
 
+
 class PostgresMarketDataRepository:
     """从只读 PostgreSQL 黄金行情库加载真实 OHLCV 数据。"""
 
@@ -132,7 +142,7 @@ class PostgresMarketDataRepository:
 
         self.dsn = settings.market_postgres_dsn
 
-    def data_version(self, spec: StrategySpec) -> str:
+    def data_version(self, spec: MarketDataSpec) -> str:
         """根据当前查询范围和行情更新时间生成稳定的数据版本。"""
 
         if spec.timeframe == "1d":
@@ -141,7 +151,11 @@ class PostgresMarketDataRepository:
                     COUNT(*),
                     MIN(trade_date),
                     MAX(trade_date),
-                    MAX(as_of)
+                    SUM(open),
+                    SUM(high),
+                    SUM(low),
+                    SUM(close),
+                    SUM(COALESCE(volume, 0))
                 FROM gold.daily_bar
                 WHERE symbol = %s
                   AND trade_date >= %s
@@ -151,6 +165,16 @@ class PostgresMarketDataRepository:
                 spec.symbol,
                 spec.start_date,
                 spec.end_date,
+            )
+            version_fields = (
+                "row_count",
+                "first_bar",
+                "last_bar",
+                "open_sum",
+                "high_sum",
+                "low_sum",
+                "close_sum",
+                "volume_sum",
             )
 
         elif spec.timeframe == "1h":
@@ -182,28 +206,23 @@ class PostgresMarketDataRepository:
                 start_time,
                 end_time,
             )
+            version_fields = ("row_count", "first_bar", "last_bar", "as_of")
 
         else:
-            raise ValueError(
-                f"PostgreSQL 暂不支持该回测周期：{spec.timeframe}"
-            )
+            raise ValueError(f"PostgreSQL 暂不支持该回测周期：{spec.timeframe}")
 
-        with psycopg.connect(self.dsn) as connection:
-            with connection.cursor() as cursor:
-                cursor.execute(sql, params)
-                row = cursor.fetchone()
+        with psycopg.connect(self.dsn) as connection, connection.cursor() as cursor:
+            cursor.execute(sql, params)
+            row = cursor.fetchone()
 
-        material = {
+        material: dict[str, object] = {
             "source": self.source_name,
             "symbol": spec.symbol,
             "timeframe": spec.timeframe,
             "start_date": spec.start_date,
             "end_date": spec.end_date,
-            "row_count": row[0],
-            "first_bar": row[1],
-            "last_bar": row[2],
-            "as_of": row[3],
         }
+        material.update(zip(version_fields, row, strict=True))
 
         digest = hashlib.sha256(
             json.dumps(
@@ -216,7 +235,7 @@ class PostgresMarketDataRepository:
 
         return f"postgres-v1:{digest}"
 
-    def load(self, spec: StrategySpec) -> list[Bar]:
+    def load(self, spec: MarketDataSpec) -> list[Bar]:
         """按 StrategySpec 的标的、周期和时间范围读取真实 K 线。"""
 
         if spec.timeframe == "1d":
@@ -275,14 +294,11 @@ class PostgresMarketDataRepository:
             )
 
         else:
-            raise ValueError(
-                f"PostgreSQL 暂不支持该回测周期：{spec.timeframe}"
-            )
+            raise ValueError(f"PostgreSQL 暂不支持该回测周期：{spec.timeframe}")
 
-        with psycopg.connect(self.dsn) as connection:
-            with connection.cursor() as cursor:
-                cursor.execute(sql, params)
-                rows = cursor.fetchall()
+        with psycopg.connect(self.dsn) as connection, connection.cursor() as cursor:
+            cursor.execute(sql, params)
+            rows = cursor.fetchall()
 
         return [
             Bar(
@@ -311,7 +327,7 @@ class SQLiteMarketDataRepository:
             raise FileNotFoundError(f"行情数据库不存在：{self.path}")
         self.source_name = f"sqlite:{self.path.name}"
 
-    def data_version(self, spec: StrategySpec) -> str:
+    def data_version(self, spec: MarketDataSpec) -> str:
         """Fingerprint file and adapter metadata without exposing the absolute path."""
         stat = self.path.stat()
         material = {
@@ -335,7 +351,7 @@ class SQLiteMarketDataRepository:
         ).hexdigest()[:16]
         return f"sqlite-v1:{digest}"
 
-    def load(self, spec: StrategySpec) -> list[Bar]:
+    def load(self, spec: MarketDataSpec) -> list[Bar]:
         columns = [
             self.settings.market_time_column,
             self.settings.market_open_column,

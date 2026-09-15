@@ -1,0 +1,158 @@
+{
+  "$defs": {
+    "EventCondition": {
+      "additionalProperties": false,
+      "description": "One return condition evaluated relative to an event anchor trading day.",
+      "properties": {
+        "field": {
+          "const": "return_pct",
+          "default": "return_pct",
+          "title": "Field",
+          "type": "string"
+        },
+        "max": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max"
+        },
+        "min": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Min"
+        },
+        "offset": {
+          "maximum": 0,
+          "minimum": -30,
+          "title": "Offset",
+          "type": "integer"
+        },
+        "operator": {
+          "enum": [
+            "gt",
+            "gte",
+            "lt",
+            "lte",
+            "between"
+          ],
+          "title": "Operator",
+          "type": "string"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Value"
+        }
+      },
+      "required": [
+        "offset",
+        "operator"
+      ],
+      "title": "EventCondition",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Bounded daily XAUUSD historical-event study request.",
+  "properties": {
+    "conditions": {
+      "items": {
+        "$ref": "#/$defs/EventCondition"
+      },
+      "maxItems": 64,
+      "minItems": 1,
+      "title": "Conditions",
+      "type": "array"
+    },
+    "end_date": {
+      "format": "date",
+      "title": "End Date",
+      "type": "string"
+    },
+    "event_name": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
+      "title": "Event Name",
+      "type": "string"
+    },
+    "forward_days": {
+      "items": {
+        "exclusiveMinimum": 0,
+        "type": "integer"
+      },
+      "maxItems": 64,
+      "minItems": 1,
+      "title": "Forward Days",
+      "type": "array"
+    },
+    "job_id": {
+      "maxLength": 128,
+      "minLength": 8,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+      "title": "Job Id",
+      "type": "string"
+    },
+    "request_id": {
+      "maxLength": 128,
+      "minLength": 8,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+      "title": "Request Id",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "event-study-request-v1",
+      "default": "event-study-request-v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "start_date": {
+      "format": "date",
+      "title": "Start Date",
+      "type": "string"
+    },
+    "symbol": {
+      "const": "XAUUSD",
+      "default": "XAUUSD",
+      "title": "Symbol",
+      "type": "string"
+    },
+    "timeframe": {
+      "const": "1d",
+      "default": "1d",
+      "title": "Timeframe",
+      "type": "string"
+    }
+  },
+  "required": [
+    "request_id",
+    "job_id",
+    "event_name",
+    "start_date",
+    "end_date",
+    "conditions",
+    "forward_days"
+  ],
+  "title": "EventStudyRequest",
+  "type": "object"
+}

@@ -1,0 +1,71 @@
+{
+  "additionalProperties": false,
+  "description": "One return condition evaluated relative to an event anchor trading day.",
+  "properties": {
+    "field": {
+      "const": "return_pct",
+      "default": "return_pct",
+      "title": "Field",
+      "type": "string"
+    },
+    "max": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Max"
+    },
+    "min": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Min"
+    },
+    "offset": {
+      "maximum": 0,
+      "minimum": -30,
+      "title": "Offset",
+      "type": "integer"
+    },
+    "operator": {
+      "enum": [
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "between"
+      ],
+      "title": "Operator",
+      "type": "string"
+    },
+    "value": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Value"
+    }
+  },
+  "required": [
+    "offset",
+    "operator"
+  ],
+  "title": "EventCondition",
+  "type": "object"
+}

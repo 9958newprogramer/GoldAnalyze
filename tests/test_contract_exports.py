@@ -22,6 +22,7 @@ def test_exported_contracts_are_strict_and_have_fixed_channels(tmp_path):
     request_schema = json.loads(
         (tmp_path / "schemas/BacktestExecuteRequest.schema.json").read_text()
     )
+    event_schema = json.loads((tmp_path / "schemas/EventStudyRequest.schema.json").read_text())
     asyncapi = json.loads((tmp_path / "asyncapi.v1.json").read_text())
     openapi = json.loads((tmp_path / "backtest-service.openapi.json").read_text())
     agent_openapi = json.loads((tmp_path / "agent-service.openapi.json").read_text())
@@ -36,6 +37,9 @@ def test_exported_contracts_are_strict_and_have_fixed_channels(tmp_path):
         "goldanalyze.backtest.events.v1",
     }
     assert "/internal/v1/backtests/execute" in openapi["paths"]
+    assert "/internal/v1/event-studies/execute" in openapi["paths"]
     assert "/internal/v1/agent-runs/execute" in agent_openapi["paths"]
     security_header = openapi["components"]["schemas"]
     assert "BacktestExecuteRequest" in security_header
+    assert event_schema["additionalProperties"] is False
+    assert event_schema["properties"]["schema_version"]["const"] == "event-study-request-v1"

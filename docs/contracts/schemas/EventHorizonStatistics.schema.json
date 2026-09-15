@@ -1,0 +1,81 @@
+{
+  "additionalProperties": false,
+  "description": "Aggregate performance for one forward trading-day horizon.",
+  "properties": {
+    "average_return_pct": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Average Return Pct"
+    },
+    "max_return_pct": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Max Return Pct"
+    },
+    "median_return_pct": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Median Return Pct"
+    },
+    "min_return_pct": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Min Return Pct"
+    },
+    "negative_count": {
+      "minimum": 0,
+      "title": "Negative Count",
+      "type": "integer"
+    },
+    "positive_count": {
+      "minimum": 0,
+      "title": "Positive Count",
+      "type": "integer"
+    },
+    "positive_rate_pct": {
+      "title": "Positive Rate Pct",
+      "type": "number"
+    },
+    "sample_count": {
+      "minimum": 0,
+      "title": "Sample Count",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "sample_count",
+    "positive_count",
+    "negative_count",
+    "positive_rate_pct",
+    "average_return_pct",
+    "median_return_pct",
+    "min_return_pct",
+    "max_return_pct"
+  ],
+  "title": "EventHorizonStatistics",
+  "type": "object"
+}

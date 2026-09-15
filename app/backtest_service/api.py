@@ -22,20 +22,27 @@ from app.backtest_service.application import (
     ExecutionDeadlineExceeded,
     WorkloadLimitExceeded,
 )
+from app.backtest_service.planner import plan_backtests
 from app.config import Settings, settings
 from app.contracts import (
     BacktestDataVersionRequest,
     BacktestDataVersionResponse,
     BacktestExecuteRequest,
     BacktestExecuteResponse,
-    ProblemDetails,
-    ServiceHealth,
     BacktestPlanRequest,
     BacktestPlanResponse,
+    EventStudyRequest,
+    EventStudyResponse,
+    ProblemDetails,
+    ServiceHealth,
 )
-from app.domain.market_data import MarketDataRepository, build_market_repository
+from app.domain.market_data import (
+    MarketDataRepository,
+    PostgresMarketDataRepository,
+    build_market_repository,
+)
+from app.event_study import EventStudyApplication, EventStudyRepository
 from app.observability import Telemetry
-from app.backtest_service.planner import plan_backtests
 
 
 def _problem(
@@ -68,8 +75,11 @@ def create_app(
     app_settings: Settings = settings,
     *,
     repository: MarketDataRepository | None = None,
+    event_repository: EventStudyRepository | None = None,
     telemetry: Telemetry | None = None,
 ) -> FastAPI:
+    """Build the internal compute API with explicit data-source adapters."""
+
     if app_settings.internal_service_token and len(app_settings.internal_service_token) < 32:
         raise ValueError("INTERNAL_SERVICE_TOKEN must contain at least 32 characters")
     if not app_settings.internal_service_token and app_settings.backtest_service_host not in {
@@ -88,7 +98,18 @@ def create_app(
         memory_max_spans=app_settings.otel_memory_max_spans,
         metric_export_interval_seconds=app_settings.otel_metric_export_interval_seconds,
     )
-    application = BacktestApplication(repository or build_market_repository(app_settings))
+    runtime_repository = repository or build_market_repository(app_settings)
+    application = BacktestApplication(runtime_repository)
+    configured_event_repository = event_repository
+    if configured_event_repository is None and isinstance(
+        runtime_repository, PostgresMarketDataRepository
+    ):
+        configured_event_repository = runtime_repository
+    event_application = (
+        EventStudyApplication(configured_event_repository)
+        if configured_event_repository is not None
+        else None
+    )
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -104,6 +125,7 @@ def create_app(
         lifespan=lifespan,
     )
     service.state.application = application
+    service.state.event_study_application = event_application
     service.state.telemetry = runtime_telemetry
 
     @service.middleware("http")
@@ -239,6 +261,41 @@ def create_app(
         """为 Java Control Plane 生成确定性的批量回测子任务计划。"""
 
         return await run_in_threadpool(plan_backtests, payload)
+
+    @service.post(
+        "/internal/v1/event-studies/execute",
+        response_model=EventStudyResponse,
+        responses={
+            401: {"model": ProblemDetails},
+            422: {"model": ProblemDetails},
+            503: {"model": ProblemDetails},
+        },
+        dependencies=[Depends(require_control_plane)],
+    )
+    async def execute_event_study(payload: EventStudyRequest):
+        """Execute an event study only against an explicitly real data source."""
+
+        if event_application is None:
+            return _problem(
+                request_id=payload.request_id,
+                status_code=503,
+                code="EVENT_STUDY_DATA_UNAVAILABLE",
+                title="Event-study data unavailable",
+                detail="A real PostgreSQL market-data source is required.",
+                telemetry=runtime_telemetry,
+                retryable=True,
+            )
+        try:
+            return await run_in_threadpool(event_application.execute, payload)
+        except (ValueError, ArithmeticError):
+            return _problem(
+                request_id=payload.request_id,
+                status_code=422,
+                code="EVENT_STUDY_INPUT_INVALID",
+                title="Event-study input rejected",
+                detail="The event conditions cannot be evaluated against the selected dataset.",
+                telemetry=runtime_telemetry,
+            )
 
     @service.post(
         "/internal/v1/backtests/execute",

@@ -2,8 +2,8 @@
   "contract_version": "1.0.0",
   "files": {
     "agent-service.openapi.json": "1eb86e76a627fe20c0df0cfc96ea42f9951b645d032af3172bee41cefe5e9fa8",
-    "asyncapi.v1.json": "752d1a82e893eceec36e0aaf26c5bf21c038e750aac14ac8e0d9b0d8924bd8ee",
-    "backtest-service.openapi.json": "86e7981e1a2a5b86bb2aef6c177ac21dae37c7c842f1ebc6bce9bb7613e6e363",
+    "asyncapi.v1.json": "b6b52f90219d2ec879d04be1027fc8e2b3a608bd0b2535ffb3f8f60c27633dbe",
+    "backtest-service.openapi.json": "7226762119b03f39d3cde941dbf7aa3304dfccff47d857edb6333c438b6a8503",
     "schemas/AgentExecuteRequest.schema.json": "e7400127f779256688ac78ffdbcc8a63029aae86ff872fd48ae44ebd2b423c31",
     "schemas/AgentExecuteResponse.schema.json": "abe572d933bb376da3a16480d8b825688e1e157820dd966922e83dc2f792f083",
     "schemas/AgentResultArtifact.schema.json": "de7daa84981645344cc2790091c3582b8cb0639d980ac78154dc7e7efbefedf6",
@@ -15,6 +15,11 @@
     "schemas/BacktestExecuteResponse.schema.json": "fb970b6825040baf50dd8617d6569230c6a9b598f7bf032cfecd8e77049d5bd1",
     "schemas/BacktestRunRequestedCommand.schema.json": "568ef93c8893c33360b0df60c320c0e740a377d7ba5b6a28fa38a61217524451",
     "schemas/BacktestRunResultEvent.schema.json": "0ff641f82cdd3d41352296b153a21eb15be1b27bd3666329608f89513d72d7f8",
+    "schemas/EventCondition.schema.json": "c2bafe4e7e1d51de698b1fb83e93312bd4aac9dcf27286153ab26079d8e65dfc",
+    "schemas/EventHorizonStatistics.schema.json": "ce753c35c7017d04d398b1270caf99991e1dfaef0e0b815cdd886a24bcf42060",
+    "schemas/EventStudyEvent.schema.json": "fc651f779543aa3ed06f55ac69c92fb2e2f3c904a9a27ac7578bb7f1519622db",
+    "schemas/EventStudyRequest.schema.json": "0c2e005f837b5570115fbe85969fff2026c906f2e1c6e63c7d39ee77febce01e",
+    "schemas/EventStudyResponse.schema.json": "6968b3491597006e15ec9d471513c5829089a2f321b2cf4a5f4b60dffa210746",
     "schemas/MessageMetadata.schema.json": "5876e7e1072c2d042d24991741ce64cafa2a12f1f4b6efddd656cd12c22deeaf",
     "schemas/ProblemDetails.schema.json": "2a24bc16a9a6bcf6cc54c6455c6f3d6001b18e95356fbf78b1f87fa6a87b7e52",
     "schemas/ServiceHealth.schema.json": "5827b5e0e77b1d3d0bfaaa328983cee1d95717365a15f59b22734ba3434fb17f"
