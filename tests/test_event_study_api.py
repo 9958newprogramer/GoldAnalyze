@@ -16,7 +16,7 @@ class EventRepositoryStub:
     source_name = "postgresql:gold:http-test"
     synthetic = False
 
-    def load(self, request: EventStudyRequest) -> list[Bar]:
+    def load_event_study(self, request: EventStudyRequest) -> list[Bar]:
         """Return one event with enough forward observations."""
 
         closes = [100, 96, 92.16, 93.0816, 94, 96.768, 97, 101.376]
@@ -31,11 +31,6 @@ class EventRepositoryStub:
             )
             for index, close in enumerate(closes)
         ]
-
-    def data_version(self, request: EventStudyRequest) -> str:
-        """Return a stable source version."""
-
-        return "postgres-v1:http-test"
 
 
 def _payload() -> dict[str, object]:
@@ -89,6 +84,8 @@ def test_event_study_api_requires_auth_and_returns_versioned_result():
     assert accepted.status_code == 200, accepted.text
     body = accepted.json()
     assert body["schema_version"] == "event-study-result-v1"
+    assert body["start_date"] == "2024-01-01"
+    assert body["end_date"] == "2024-12-31"
     assert body["event_count"] == 1
     assert body["events"][0]["forward_returns"] == {"1": 1.0, "3": 5.0, "5": 10.0}
     assert body["data_profile"]["synthetic"] is False

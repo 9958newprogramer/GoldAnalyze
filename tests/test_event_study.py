@@ -36,6 +36,8 @@ def _request(
     *,
     forward_days: list[int] | None = None,
     event_name: str = "test_event",
+    start_date: date = date(2024, 1, 1),
+    end_date: date = date(2024, 12, 31),
 ) -> EventStudyRequest:
     """Build a valid event-study request around supplied conditions."""
 
@@ -46,8 +48,8 @@ def _request(
             "event_name": event_name,
             "symbol": "XAUUSD",
             "timeframe": "1d",
-            "start_date": "2024-01-01",
-            "end_date": "2024-12-31",
+            "start_date": start_date,
+            "end_date": end_date,
             "conditions": conditions,
             "forward_days": forward_days or [1, 3, 5],
         }
@@ -65,15 +67,10 @@ class RealRepositoryStub:
 
         self.bars = bars
 
-    def load(self, request: EventStudyRequest) -> list[Bar]:
-        """Return a copy of the configured rows."""
+    def load_event_study(self, request: EventStudyRequest) -> list[Bar]:
+        """Return a copy of the configured context and anchor rows."""
 
         return list(self.bars)
-
-    def data_version(self, request: EventStudyRequest) -> str:
-        """Return a stable fake PostgreSQL data version."""
-
-        return "postgres-v1:test-event-data"
 
 
 class SyntheticRepositoryStub(RealRepositoryStub):
@@ -169,7 +166,13 @@ def test_example_a_uses_trading_day_offsets_and_forward_1_3_5_returns():
         event_name="two_consecutive_drop_over_3pct",
     )
 
-    events = scan_historical_events(bars, request.conditions, request.forward_days)
+    events = scan_historical_events(
+        bars,
+        request.conditions,
+        request.forward_days,
+        start_date=request.start_date,
+        end_date=request.end_date,
+    )
 
     assert len(events) == 1
     assert events[0].event_date == date(2024, 1, 8)
@@ -202,7 +205,13 @@ def test_example_b_between_boundaries_and_three_day_pattern():
         event_name="drop_over_3pct_then_two_sideways_days",
     )
 
-    events = scan_historical_events(bars, request.conditions, request.forward_days)
+    events = scan_historical_events(
+        bars,
+        request.conditions,
+        request.forward_days,
+        start_date=request.start_date,
+        end_date=request.end_date,
+    )
 
     assert len(events) == 1
     assert events[0].event_date == date(2024, 1, 4)
@@ -220,10 +229,25 @@ def test_conditions_are_and_combined_and_tail_horizons_are_unavailable():
             {"offset": 0, "operator": "lte", "value": -3},
         ]
     )
-    assert scan_historical_events(bars, consecutive.conditions, consecutive.forward_days) == []
+    assert (
+        scan_historical_events(
+            bars,
+            consecutive.conditions,
+            consecutive.forward_days,
+            start_date=consecutive.start_date,
+            end_date=consecutive.end_date,
+        )
+        == []
+    )
 
     tail = _request([{"offset": 0, "operator": "lte", "value": -3}])
-    tail_events = scan_historical_events(_bars([100, 96]), tail.conditions, tail.forward_days)
+    tail_events = scan_historical_events(
+        _bars([100, 96]),
+        tail.conditions,
+        tail.forward_days,
+        start_date=tail.start_date,
+        end_date=tail.end_date,
+    )
     assert len(tail_events) == 1
     assert tail_events[0].forward_returns == {1: None, 3: None, 5: None}
 
@@ -267,11 +291,13 @@ def test_application_is_deterministic_and_reuses_profile_and_data_version():
 
     assert first == second
     assert first.event_count == 1
-    assert first.data_version == "postgres-v1:test-event-data"
+    assert first.data_version.startswith("postgres-event-v1:")
     assert first.data_profile.source == "postgresql:gold:test-double"
     assert first.data_profile.synthetic is False
     assert first.statistics["1"].sample_count == 1
     assert first.statistics["1"].positive_rate_pct == 100
+    assert first.start_date == request.start_date
+    assert first.end_date == request.end_date
 
 
 def test_application_rejects_synthetic_market_data():
@@ -279,3 +305,176 @@ def test_application_rejects_synthetic_market_data():
 
     with pytest.raises(ValueError, match="real PostgreSQL"):
         EventStudyApplication(SyntheticRepositoryStub(_bars([100, 96])))
+
+
+def test_start_boundary_uses_preceding_trading_row_for_anchor_return():
+    """An anchor at start_date can use a predecessor outside the study window."""
+
+    bars = _bars(
+        [100, 96, 97],
+        [date(2020, 8, 18), date(2020, 8, 19), date(2020, 8, 20)],
+    )
+    request = _request(
+        [{"offset": 0, "operator": "lte", "value": -3}],
+        forward_days=[1],
+        start_date=date(2020, 8, 19),
+        end_date=date(2020, 8, 20),
+    )
+
+    events = scan_historical_events(
+        bars,
+        request.conditions,
+        request.forward_days,
+        start_date=request.start_date,
+        end_date=request.end_date,
+    )
+
+    assert [event.event_date for event in events] == [date(2020, 8, 19)]
+    assert events[0].event_return_pct == -4
+
+
+def test_end_boundary_uses_following_trading_rows_across_weekend():
+    """Forward returns use row positions beyond end_date, including across weekends."""
+
+    anchor_close = 100.0
+    predecessor_close = anchor_close / (1 - 0.03679174)
+    bars = _bars(
+        [
+            predecessor_close,
+            anchor_close,
+            100.927184,
+            100.5,
+            100.006223,
+            100.75,
+            101.336846,
+        ],
+        [
+            date(2020, 8, 18),
+            date(2020, 8, 19),
+            date(2020, 8, 20),
+            date(2020, 8, 21),
+            date(2020, 8, 24),
+            date(2020, 8, 25),
+            date(2020, 8, 26),
+        ],
+    )
+    request = _request(
+        [{"offset": 0, "operator": "lte", "value": -3}],
+        start_date=date(2020, 8, 18),
+        end_date=date(2020, 8, 21),
+    )
+
+    events = scan_historical_events(
+        bars,
+        request.conditions,
+        request.forward_days,
+        start_date=request.start_date,
+        end_date=request.end_date,
+    )
+
+    assert len(events) == 1
+    assert events[0].event_date == date(2020, 8, 19)
+    assert events[0].event_return_pct == pytest.approx(-3.679174)
+    assert events[0].forward_returns == {1: 0.927184, 3: 0.006223, 5: 1.336846}
+
+
+def test_offset_minus_two_can_use_t_minus_three_close_before_start_boundary():
+    """The t-2 return remains calculable because its t-3 close is in context."""
+
+    bars = _bars(
+        [100, 96, 96.5, 96.75, 97],
+        [
+            date(2024, 1, 4),
+            date(2024, 1, 5),
+            date(2024, 1, 8),
+            date(2024, 1, 9),
+            date(2024, 1, 10),
+        ],
+    )
+    request = _request(
+        [
+            {"offset": -2, "operator": "lte", "value": -3},
+            {"offset": 0, "operator": "between", "min": -1, "max": 1},
+        ],
+        forward_days=[1],
+        start_date=date(2024, 1, 9),
+        end_date=date(2024, 1, 10),
+    )
+
+    events = scan_historical_events(
+        bars,
+        request.conditions,
+        request.forward_days,
+        start_date=request.start_date,
+        end_date=request.end_date,
+    )
+
+    assert [event.event_date for event in events] == [date(2024, 1, 9)]
+
+
+def test_context_rows_cannot_become_event_anchors():
+    """Matching context rows support calculations but never emit out-of-window events."""
+
+    bars = _bars(
+        [100, 96, 92, 88, 84],
+        [
+            date(2024, 1, 5),
+            date(2024, 1, 8),
+            date(2024, 1, 9),
+            date(2024, 1, 10),
+            date(2024, 1, 11),
+        ],
+    )
+    request = _request(
+        [{"offset": 0, "operator": "lte", "value": -3}],
+        forward_days=[1],
+        start_date=date(2024, 1, 9),
+        end_date=date(2024, 1, 10),
+    )
+
+    events = scan_historical_events(
+        bars,
+        request.conditions,
+        request.forward_days,
+        start_date=request.start_date,
+        end_date=request.end_date,
+    )
+
+    assert [event.event_date for event in events] == [date(2024, 1, 9), date(2024, 1, 10)]
+
+
+def test_application_profiles_only_anchor_window_and_versions_all_context_rows():
+    """Public profile stays scoped while data_version fingerprints both context sides."""
+
+    dates = [
+        date(2024, 1, 5),
+        date(2024, 1, 8),
+        date(2024, 1, 9),
+        date(2024, 1, 10),
+    ]
+    request = _request(
+        [
+            {"offset": -1, "operator": "between", "min": 0, "max": 3},
+            {"offset": 0, "operator": "lte", "value": -3},
+        ],
+        forward_days=[1],
+        start_date=date(2024, 1, 8),
+        end_date=date(2024, 1, 9),
+    )
+    baseline = EventStudyApplication(RealRepositoryStub(_bars([100, 101, 96, 98], dates))).execute(
+        request
+    )
+    changed_pre = EventStudyApplication(
+        RealRepositoryStub(_bars([99, 101, 96, 98], dates))
+    ).execute(request)
+    changed_post = EventStudyApplication(
+        RealRepositoryStub(_bars([100, 101, 96, 99], dates))
+    ).execute(request)
+
+    assert baseline.data_profile.row_count == 2
+    assert baseline.data_profile.start_at.date() == request.start_date
+    assert baseline.data_profile.end_at.date() == request.end_date
+    assert baseline.events[0].event_date == request.end_date
+    assert baseline.events[0].forward_returns["1"] != changed_post.events[0].forward_returns["1"]
+    assert baseline.data_version != changed_pre.data_version
+    assert baseline.data_version != changed_post.data_version

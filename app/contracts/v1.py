@@ -292,6 +292,8 @@ class EventStudyResponse(StrictContract):
     event_name: str = Field(min_length=1, max_length=128)
     symbol: Literal["XAUUSD"] = "XAUUSD"
     timeframe: Literal["1d"] = "1d"
+    start_date: date
+    end_date: date
     event_count: int = Field(ge=0)
     events: list[EventStudyEvent]
     statistics: dict[str, EventHorizonStatistics]

@@ -192,6 +192,11 @@
       "title": "Data Version",
       "type": "string"
     },
+    "end_date": {
+      "format": "date",
+      "title": "End Date",
+      "type": "string"
+    },
     "event_count": {
       "minimum": 0,
       "title": "Event Count",
@@ -230,6 +235,11 @@
       "title": "Schema Version",
       "type": "string"
     },
+    "start_date": {
+      "format": "date",
+      "title": "Start Date",
+      "type": "string"
+    },
     "statistics": {
       "additionalProperties": {
         "$ref": "#/$defs/EventHorizonStatistics"
@@ -254,6 +264,8 @@
     "request_id",
     "job_id",
     "event_name",
+    "start_date",
+    "end_date",
     "event_count",
     "events",
     "statistics",

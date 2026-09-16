@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+from itertools import pairwise
 from typing import Protocol
 
 from app.contracts import (
@@ -21,15 +24,55 @@ class EventStudyRepository(Protocol):
     source_name: str
     synthetic: bool
 
-    def load(self, request: EventStudyRequest) -> list[Bar]:
-        """Load requested daily bars in ascending trading-date order."""
+    def load_event_study(self, request: EventStudyRequest) -> list[Bar]:
+        """Load anchor bars and required trading-row context in ascending order."""
 
         ...
 
-    def data_version(self, request: EventStudyRequest) -> str:
-        """Return a stable identity for the selected market data."""
 
-        ...
+def _validate_calculation_bars(bars: list[Bar]) -> None:
+    """Fail closed on invalid context because every row can affect a result."""
+
+    timestamps = [bar.at for bar in bars]
+    if len(timestamps) != len(set(timestamps)):
+        raise ValueError("event-study data contains duplicate trading dates")
+    if any(current <= previous for previous, current in pairwise(timestamps)):
+        raise ValueError("event-study data must be ordered by trading date")
+    if any(min(bar.open, bar.high, bar.low, bar.close) <= 0 for bar in bars):
+        raise ValueError("event-study data contains non-positive prices")
+
+
+def _event_study_data_version(
+    repository: EventStudyRepository,
+    request: EventStudyRequest,
+    bars: list[Bar],
+) -> str:
+    """Fingerprint every OHLCV row that can affect conditions or forward returns."""
+
+    material = {
+        "source": repository.source_name,
+        "symbol": request.symbol,
+        "timeframe": request.timeframe,
+        "start_date": request.start_date,
+        "end_date": request.end_date,
+        "minimum_offset": min(condition.offset for condition in request.conditions),
+        "maximum_forward_days": max(request.forward_days),
+        "bars": [
+            {
+                "at": bar.at,
+                "open": bar.open,
+                "high": bar.high,
+                "low": bar.low,
+                "close": bar.close,
+                "volume": bar.volume,
+            }
+            for bar in bars
+        ],
+    }
+    digest = hashlib.sha256(
+        json.dumps(material, sort_keys=True, separators=(",", ":"), default=str).encode()
+    ).hexdigest()[:16]
+    return f"postgres-event-v1:{digest}"
 
 
 def _profile_bars(
@@ -41,13 +84,6 @@ def _profile_bars(
 
     if not bars:
         raise ValueError("selected event-study range contains no market data")
-    timestamps = [bar.at for bar in bars]
-    duplicate_count = len(timestamps) - len(set(timestamps))
-    non_positive = sum(1 for bar in bars if min(bar.open, bar.high, bar.low, bar.close) <= 0)
-    if duplicate_count:
-        raise ValueError("event-study data contains duplicate trading dates")
-    if non_positive:
-        raise ValueError("event-study data contains non-positive prices")
     return DataProfile(
         source=repository.source_name,
         synthetic=False,
@@ -75,10 +111,20 @@ class EventStudyApplication:
     def execute(self, request: EventStudyRequest) -> EventStudyResponse:
         """Execute one event study and return versioned details and statistics."""
 
-        data_version = self.repository.data_version(request)
-        bars = self.repository.load(request)
-        profile = _profile_bars(self.repository, request, bars)
-        occurrences = scan_historical_events(bars, request.conditions, request.forward_days)
+        bars = self.repository.load_event_study(request)
+        _validate_calculation_bars(bars)
+        anchor_bars = [
+            bar for bar in bars if request.start_date <= bar.at.date() <= request.end_date
+        ]
+        profile = _profile_bars(self.repository, request, anchor_bars)
+        data_version = _event_study_data_version(self.repository, request, bars)
+        occurrences = scan_historical_events(
+            bars,
+            request.conditions,
+            request.forward_days,
+            start_date=request.start_date,
+            end_date=request.end_date,
+        )
         aggregates = calculate_event_statistics(occurrences, request.forward_days)
         events = [
             EventStudyEvent(
@@ -110,6 +156,8 @@ class EventStudyApplication:
             event_name=request.event_name,
             symbol=request.symbol,
             timeframe=request.timeframe,
+            start_date=request.start_date,
+            end_date=request.end_date,
             event_count=len(events),
             events=events,
             statistics=statistics,

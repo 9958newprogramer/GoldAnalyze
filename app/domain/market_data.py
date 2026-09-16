@@ -10,12 +10,15 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 import psycopg
 
 from app.config import Settings
 from app.models import DataProfile, StrategySpec
+
+if TYPE_CHECKING:
+    from app.contracts import EventStudyRequest
 
 
 @dataclass(frozen=True)
@@ -295,6 +298,95 @@ class PostgresMarketDataRepository:
 
         else:
             raise ValueError(f"PostgreSQL 暂不支持该回测周期：{spec.timeframe}")
+
+        with psycopg.connect(self.dsn) as connection, connection.cursor() as cursor:
+            cursor.execute(sql, params)
+            rows = cursor.fetchall()
+
+        return [
+            Bar(
+                at=_parse_timestamp(row[0]),
+                open=float(row[1]),
+                high=float(row[2]),
+                low=float(row[3]),
+                close=float(row[4]),
+                volume=float(row[5] or 0),
+            )
+            for row in rows
+        ]
+
+    def load_event_study(self, request: EventStudyRequest) -> list[Bar]:
+        """Load the anchor window plus trading-row context required by an event study."""
+
+        if request.timeframe != "1d":
+            raise ValueError(f"PostgreSQL 暂不支持该事件研究周期：{request.timeframe}")
+
+        minimum_offset = min(condition.offset for condition in request.conditions)
+        preceding_rows = max(1, abs(minimum_offset) + 1)
+        following_rows = max(request.forward_days)
+        sql = """
+            WITH preceding AS (
+                SELECT
+                    trade_date,
+                    open,
+                    high,
+                    low,
+                    close,
+                    volume
+                FROM gold.daily_bar
+                WHERE symbol = %s
+                  AND trade_date < %s
+                ORDER BY trade_date DESC
+                LIMIT %s
+            ),
+            anchor_window AS (
+                SELECT
+                    trade_date,
+                    open,
+                    high,
+                    low,
+                    close,
+                    volume
+                FROM gold.daily_bar
+                WHERE symbol = %s
+                  AND trade_date >= %s
+                  AND trade_date <= %s
+            ),
+            following AS (
+                SELECT
+                    trade_date,
+                    open,
+                    high,
+                    low,
+                    close,
+                    volume
+                FROM gold.daily_bar
+                WHERE symbol = %s
+                  AND trade_date > %s
+                ORDER BY trade_date ASC
+                LIMIT %s
+            )
+            SELECT *
+            FROM (
+                SELECT * FROM preceding
+                UNION ALL
+                SELECT * FROM anchor_window
+                UNION ALL
+                SELECT * FROM following
+            ) AS event_study_bars
+            ORDER BY trade_date ASC
+        """
+        params = (
+            request.symbol,
+            request.start_date,
+            preceding_rows,
+            request.symbol,
+            request.start_date,
+            request.end_date,
+            request.symbol,
+            request.end_date,
+            following_rows,
+        )
 
         with psycopg.connect(self.dsn) as connection, connection.cursor() as cursor:
             cursor.execute(sql, params)

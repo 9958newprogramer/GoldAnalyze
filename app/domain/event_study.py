@@ -102,12 +102,18 @@ def scan_historical_events(
     bars: list[Bar],
     conditions: list[EventCondition],
     forward_days: list[int],
+    *,
+    start_date: date,
+    end_date: date,
 ) -> list[EventOccurrence]:
-    """Find AND-matched anchors and calculate position-based forward returns."""
+    """Find in-window anchors while using all supplied rows as calculation context."""
 
     returns = calculate_daily_returns(bars)
     events: list[EventOccurrence] = []
     for anchor_index, anchor_bar in enumerate(bars):
+        anchor_date = anchor_bar.at.date()
+        if anchor_date < start_date or anchor_date > end_date:
+            continue
         matched = True
         for condition in conditions:
             condition_index = anchor_index + condition.offset
@@ -126,7 +132,7 @@ def scan_historical_events(
             continue
         events.append(
             EventOccurrence(
-                event_date=anchor_bar.at.date(),
+                event_date=anchor_date,
                 event_return_pct=round(anchor_return, 6),
                 forward_returns=calculate_forward_returns(bars, anchor_index, forward_days),
             )

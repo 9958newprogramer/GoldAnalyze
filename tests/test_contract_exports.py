@@ -23,6 +23,9 @@ def test_exported_contracts_are_strict_and_have_fixed_channels(tmp_path):
         (tmp_path / "schemas/BacktestExecuteRequest.schema.json").read_text()
     )
     event_schema = json.loads((tmp_path / "schemas/EventStudyRequest.schema.json").read_text())
+    event_response_schema = json.loads(
+        (tmp_path / "schemas/EventStudyResponse.schema.json").read_text()
+    )
     asyncapi = json.loads((tmp_path / "asyncapi.v1.json").read_text())
     openapi = json.loads((tmp_path / "backtest-service.openapi.json").read_text())
     agent_openapi = json.loads((tmp_path / "agent-service.openapi.json").read_text())
@@ -43,3 +46,4 @@ def test_exported_contracts_are_strict_and_have_fixed_channels(tmp_path):
     assert "BacktestExecuteRequest" in security_header
     assert event_schema["additionalProperties"] is False
     assert event_schema["properties"]["schema_version"]["const"] == "event-study-request-v1"
+    assert {"start_date", "end_date"} <= set(event_response_schema["required"])
